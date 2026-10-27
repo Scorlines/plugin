@@ -1,0 +1,411 @@
+---
+description: "Accessibility (WCAG 2.2), Internationalization (i18n), and SEO standards. Apply to all user-facing pages, components, and routes."
+globs: ["**/*.tsx", "**/*.jsx", "app/**/*", "pages/**/*", "components/**/*"]
+alwaysApply: false
+---
+# Accessibility, Internationalization & SEO Standards
+
+You are a frontend engineer who builds for everyone. Accessible, multilingual, and discoverable applications are not optional — they are baseline requirements.
+
+---
+
+## Part 1: Accessibility (a11y) — WCAG 2.2 Level AA
+
+### Semantic HTML First
+
+```tsx
+// ❌ NEVER: Div soup with no semantic meaning
+<div onClick={handleClick}>Click me</div>
+<div class="header">My App</div>
+<div class="nav-item">Home</div>
+
+// ✅ ALWAYS: Semantic elements with correct roles
+<button onClick={handleClick}>Click me</button>
+<header><h1>My App</h1></header>
+<nav aria-label="Main navigation">
+  <ul>
+    <li><a href="/">Home</a></li>
+    <li><a href="/about">About</a></li>
+  </ul>
+</nav>
+```
+
+**Semantic Rules:**
+- Use `<button>` for actions, `<a>` for navigation. Never use `<div onClick>`.
+- Use `<main>`, `<header>`, `<footer>`, `<nav>`, `<section>`, `<article>` for page landmarks.
+- Use one `<h1>` per page. Heading levels must not skip (`h1 → h3` is forbidden; use `h1 → h2 → h3`).
+- Use `<ul>/<ol>` for lists, `<table>` for tabular data (not divs with grid).
+- Use `<label>` for every form input. Use `htmlFor` to associate label with input `id`.
+
+### ARIA Attributes
+
+```tsx
+// ✅ ARIA only when native HTML isn't enough
+// Live regions for dynamic content updates
+<div role="status" aria-live="polite" aria-atomic="true">
+  {isPending ? 'Saving...' : 'Changes saved'}
+</div>
+
+// Loading states
+<button disabled={isPending} aria-busy={isPending}>
+  {isPending ? 'Loading...' : 'Submit'}
+</button>
+
+// Expandable sections
+<button aria-expanded={isOpen} aria-controls="panel-1" onClick={toggle}>
+  FAQ Question
+</button>
+<div id="panel-1" role="region" hidden={!isOpen}>
+  Answer content here
+</div>
+
+// Icon-only buttons MUST have accessible names
+<button aria-label="Close dialog" onClick={onClose}>
+  <XIcon aria-hidden="true" />
+</button>
+
+// Decorative images are hidden; meaningful images have alt
+<img src="/logo.svg" alt="" aria-hidden="true" />           {/* decorative */}
+<img src="/chart.png" alt="Revenue chart showing 25% growth in Q3 2024" /> {/* meaningful */}
+```
+
+**ARIA Rules:**
+- First rule of ARIA: don't use ARIA if native HTML has the semantics you need.
+- Every interactive element must have an accessible name (text content, `aria-label`, or `aria-labelledby`).
+- Use `aria-live="polite"` for toast notifications and non-urgent status updates.
+- Use `aria-live="assertive"` only for critical alerts (errors, security warnings).
+- Never use `aria-label` on non-interactive elements (divs, spans) unless they have a role.
+- Decorative images: `alt=""` and `aria-hidden="true"`. Meaningful images: descriptive `alt` text.
+
+### Keyboard Navigation
+
+```tsx
+// ✅ All interactive elements must be keyboard accessible
+// Tab order follows visual order (no positive tabindex values)
+<input tabIndex={0} />     {/* ✅ Natural tab order */}
+<div tabIndex={-1} />       {/* ✅ Programmatically focusable, not in tab order */}
+<div tabIndex={5} />        {/* ❌ NEVER: Positive tabindex creates chaos */}
+
+// Trap focus in modals
+// Use Radix Dialog or Shadcn Dialog — they handle this automatically
+
+// Skip navigation link
+<a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-background focus:text-foreground focus:rounded-md">
+  Skip to main content
+</a>
+<main id="main-content">...</main>
+```
+
+**Keyboard Rules:**
+- All functionality available by mouse must also work with keyboard alone.
+- Focus must be visible: never remove `outline` without providing a custom focus indicator.
+- Modals must trap focus. Closing a modal returns focus to the trigger element.
+- Dropdown menus: Arrow keys navigate, Enter selects, Escape closes.
+- Use Shadcn/Radix components — they implement keyboard patterns correctly by default.
+
+### Focus Management
+
+```css
+/* ✅ Tailwind: Visible focus ring for keyboard users */
+/* Focus-visible only shows ring for keyboard, not mouse clicks */
+.focus-ring {
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2;
+}
+
+/* ❌ NEVER remove focus outlines globally */
+/* *:focus { outline: none; } */
+```
+
+### Color & Contrast
+
+- **Text Contrast Ratio:** Minimum 4.5:1 for normal text, 3:1 for large text (18px+ or 14px+ bold).
+- **Non-text Contrast:** UI components and graphical objects need 3:1 minimum.
+- Never use color alone to convey information (error states need icons + text, not just red borders).
+- Test with browser DevTools → Accessibility → Contrast checker.
+
+### Touch Targets
+
+- Minimum touch target size: 44x44px (WCAG 2.2 Level AA).
+- Ensure adequate spacing between adjacent interactive elements (minimum 8px gap).
+
+### Testing a11y
+
+```bash
+# ✅ Automated checks (catches ~30% of issues)
+npm install -D @axe-core/react eslint-plugin-jsx-a11y
+
+# ESLint plugin
+# .eslintrc.js
+{
+  "extends": ["plugin:jsx-a11y/recommended"]
+}
+```
+
+```tsx
+// ✅ axe-core in development
+if (process.env.NODE_ENV === 'development') {
+  import('@axe-core/react').then((axe) => {
+    axe.default(React, ReactDOM, 1000);
+  });
+}
+```
+
+**a11y Testing Checklist:**
+- [ ] Navigate entire app with keyboard only (Tab, Shift+Tab, Enter, Escape, Arrow keys)
+- [ ] Test with screen reader (NVDA on Windows, VoiceOver on Mac)
+- [ ] Verify color contrast ratios (DevTools → Accessibility)
+- [ ] Check with browser zoom at 200% — no content cut off or overlapping
+- [ ] Ensure all images have appropriate `alt` attributes
+- [ ] Run axe-core automated audit — zero critical violations
+
+---
+
+## Part 2: Internationalization (i18n)
+
+### Setup with next-intl (Recommended for Next.js)
+
+```bash
+npm install next-intl
+```
+
+```typescript
+// messages/en.json
+{
+  "common": {
+    "welcome": "Welcome, {name}!",
+    "items": "You have {count, plural, =0 {no items} one {# item} other {# items}}.",
+    "save": "Save",
+    "cancel": "Cancel",
+    "loading": "Loading...",
+    "error": "Something went wrong"
+  },
+  "auth": {
+    "login": "Sign in",
+    "logout": "Sign out",
+    "email": "Email address",
+    "password": "Password"
+  }
+}
+
+// messages/id.json
+{
+  "common": {
+    "welcome": "Selamat datang, {name}!",
+    "items": "Anda memiliki {count, plural, =0 {tidak ada item} other {# item}}.",
+    "save": "Simpan",
+    "cancel": "Batal",
+    "loading": "Memuat...",
+    "error": "Terjadi kesalahan"
+  },
+  "auth": {
+    "login": "Masuk",
+    "logout": "Keluar",
+    "email": "Alamat email",
+    "password": "Kata sandi"
+  }
+}
+```
+
+```tsx
+// ✅ Usage in components
+import { useTranslations } from 'next-intl';
+
+export function Dashboard({ userName, itemCount }: Props) {
+  const t = useTranslations('common');
+
+  return (
+    <div>
+      <h1>{t('welcome', { name: userName })}</h1>
+      <p>{t('items', { count: itemCount })}</p>
+      <button>{t('save')}</button>
+    </div>
+  );
+}
+```
+
+**i18n Rules:**
+- Never hardcode user-facing strings. Always use translation keys.
+- Support RTL (right-to-left) layouts for Arabic, Hebrew, etc. Use `dir="rtl"` and logical CSS properties (`margin-inline-start` instead of `margin-left`).
+- Format dates, numbers, and currencies with `Intl.DateTimeFormat` / `Intl.NumberFormat` — never manual string formatting.
+- Use ICU message format for pluralization — it handles complex plural rules per locale.
+- Keep translation keys organized by feature/page namespace.
+- Fallback locale: always define a fallback (usually English) for missing translations.
+
+```tsx
+// ✅ Date & number formatting with Intl API
+const formattedDate = new Intl.DateTimeFormat(locale, {
+  year: 'numeric', month: 'long', day: 'numeric'
+}).format(new Date());
+
+const formattedPrice = new Intl.NumberFormat(locale, {
+  style: 'currency', currency: 'USD'
+}).format(29.99);
+```
+
+---
+
+## Part 3: SEO (Search Engine Optimization)
+
+### Metadata API (Next.js 15)
+
+```typescript
+// ✅ Static metadata — app/page.tsx
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Home | YourApp',
+  description: 'Build amazing products with our platform. Start free today.',
+  keywords: ['saas', 'productivity', 'project management'],
+  authors: [{ name: 'Your Name' }],
+  creator: 'YourApp',
+  openGraph: {
+    type: 'website',
+    locale: 'en_US',
+    url: 'https://yourapp.com',
+    siteName: 'YourApp',
+    title: 'YourApp — Build Amazing Products',
+    description: 'Build amazing products with our platform.',
+    images: [{ url: '/og-image.png', width: 1200, height: 630, alt: 'YourApp Preview' }],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'YourApp — Build Amazing Products',
+    description: 'Build amazing products with our platform.',
+    images: ['/og-image.png'],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, 'max-image-preview': 'large' },
+  },
+  alternates: {
+    canonical: 'https://yourapp.com',
+    languages: { 'en': '/en', 'id': '/id' },
+  },
+};
+```
+
+```typescript
+// ✅ Dynamic metadata — app/blog/[slug]/page.tsx
+import type { Metadata } from 'next';
+
+type Props = { params: Promise<{ slug: string }> };
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { slug } = await params;
+  const post = await getPost(slug);
+
+  if (!post) return { title: 'Post Not Found' };
+
+  return {
+    title: `${post.title} | Blog`,
+    description: post.excerpt,
+    openGraph: {
+      title: post.title,
+      description: post.excerpt,
+      type: 'article',
+      publishedTime: post.publishedAt.toISOString(),
+      authors: [post.author.name],
+      images: [{ url: post.coverImage, width: 1200, height: 630 }],
+    },
+  };
+}
+```
+
+### Structured Data (JSON-LD)
+
+```tsx
+// ✅ JSON-LD for rich search results
+export default function ProductPage({ product }: { product: Product }) {
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Product',
+    name: product.name,
+    description: product.description,
+    image: product.images,
+    offers: {
+      '@type': 'Offer',
+      price: product.price,
+      priceCurrency: 'USD',
+      availability: product.inStock
+        ? 'https://schema.org/InStock'
+        : 'https://schema.org/OutOfStock',
+    },
+    aggregateRating: {
+      '@type': 'AggregateRating',
+      ratingValue: product.rating,
+      reviewCount: product.reviewCount,
+    },
+  };
+
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      {/* Page content */}
+    </>
+  );
+}
+```
+
+### Technical SEO
+
+```tsx
+// ✅ app/sitemap.ts — Auto-generated sitemap
+import type { MetadataRoute } from 'next';
+
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  const posts = await getAllPosts();
+
+  const postEntries = posts.map((post) => ({
+    url: `https://yourapp.com/blog/${post.slug}`,
+    lastModified: post.updatedAt,
+    changeFrequency: 'weekly' as const,
+    priority: 0.7,
+  }));
+
+  return [
+    { url: 'https://yourapp.com', lastModified: new Date(), changeFrequency: 'daily', priority: 1.0 },
+    { url: 'https://yourapp.com/about', lastModified: new Date(), changeFrequency: 'monthly', priority: 0.5 },
+    { url: 'https://yourapp.com/pricing', lastModified: new Date(), changeFrequency: 'weekly', priority: 0.8 },
+    ...postEntries,
+  ];
+}
+```
+
+```tsx
+// ✅ app/robots.ts
+import type { MetadataRoute } from 'next';
+
+export default function robots(): MetadataRoute.Robots {
+  return {
+    rules: [
+      { userAgent: '*', allow: '/', disallow: ['/api/', '/admin/', '/dashboard/'] },
+    ],
+    sitemap: 'https://yourapp.com/sitemap.xml',
+  };
+}
+```
+
+**SEO Rules:**
+- Every page must have a unique `<title>` (50-60 chars) and `meta description` (150-160 chars).
+- Use one `<h1>` per page. The `<h1>` should match or closely relate to the page `<title>`.
+- All images: descriptive `alt` text (except decorative images).
+- Set `canonical` URLs to prevent duplicate content issues.
+- Implement Open Graph and Twitter Card meta tags for social sharing.
+- Use `next/image` for automatic image optimization and lazy loading.
+- Generate `sitemap.xml` and `robots.txt` programmatically.
+- Implement JSON-LD structured data for rich search results.
+- Ensure pages are server-rendered or statically generated (not client-only SPA) for crawlability.
+
+### SEO Checklist
+
+- [ ] Unique `<title>` and `<meta description>` on every page
+- [ ] One `<h1>` per page with proper heading hierarchy
+- [ ] All meaningful images have descriptive `alt` text
+- [ ] Open Graph + Twitter Card meta tags set
+- [ ] `sitemap.xml` auto-generated and submitted to Google Search Console
+- [ ] `robots.txt` configured (block `/api/`, `/admin/`)
+- [ ] Canonical URLs set on all pages
+- [ ] JSON-LD structured data on product/article pages
+- [ ] Server-rendered or statically generated (not client-only)
+- [ ] Core Web Vitals passing (LCP < 2.5s, CLS < 0.1)

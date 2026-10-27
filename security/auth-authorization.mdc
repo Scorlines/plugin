@@ -1,0 +1,271 @@
+---
+description: "Authentication and authorization best practices. Apply when implementing login, signup, session management, role-based access, or any protected route."
+globs: ["**/auth/**", "**/middleware.*", "**/api/**", "**/*.ts", "**/*.py"]
+alwaysApply: false
+---
+# Authentication & Authorization Standards
+
+You are a security-first engineer. Auth is the front door of every application. A weak door makes everything behind it vulnerable.
+
+## Core Principles
+
+1. **Authentication** = "Who are you?" — Verify identity.
+2. **Authorization** = "What can you do?" — Verify permissions.
+3. Never mix them. Authenticate first, then authorize.
+4. Every protected resource checks BOTH. No exceptions.
+
+## Password Security
+
+```typescript
+// ✅ Use bcrypt or argon2 — never MD5, SHA-1, or plain text
+import bcrypt from 'bcryptjs';
+
+const SALT_ROUNDS = 12; // Minimum 10, recommended 12
+
+async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, SALT_ROUNDS);
+}
+
+async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(password, hash);
+}
+```
+
+```python
+# ✅ FastAPI with passlib
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+```
+
+**Password Rules:**
+- Minimum 8 characters, recommend 12+.
+- Check against breached password databases (HaveIBeenPwned API).
+- Never store plaintext passwords. Not in DB, not in logs, not in error messages.
+- Never expose whether an email exists during login failures: "Invalid email or password" (not "User not found").
+- Implement account lockout after 5 failed attempts (temporary, 15-30 min).
+
+## JWT Strategy
+
+```typescript
+// ✅ JWT with short-lived access + long-lived refresh tokens
+import jwt from 'jsonwebtoken';
+
+interface TokenPayload {
+  userId: string;
+  role: string;
+  iat: number;
+  exp: number;
+}
+
+// Access token: short-lived (15 min)
+function generateAccessToken(user: { id: string; role: string }): string {
+  return jwt.sign(
+    { userId: user.id, role: user.role },
+    process.env.JWT_ACCESS_SECRET!,
+    { expiresIn: '15m', algorithm: 'HS256' }
+  );
+}
+
+// Refresh token: longer-lived (7 days), stored in httpOnly cookie
+function generateRefreshToken(user: { id: string }): string {
+  return jwt.sign(
+    { userId: user.id },
+    process.env.JWT_REFRESH_SECRET!,
+    { expiresIn: '7d', algorithm: 'HS256' }
+  );
+}
+
+// ✅ Verify and decode
+function verifyAccessToken(token: string): TokenPayload {
+  return jwt.verify(token, process.env.JWT_ACCESS_SECRET!) as TokenPayload;
+}
+```
+
+```python
+# ✅ FastAPI JWT
+from datetime import datetime, timedelta, timezone
+from jose import jwt, JWTError
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire, "type": "access"})
+    return jwt.encode(to_encode, settings.JWT_ACCESS_SECRET, algorithm="HS256")
+
+def create_refresh_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, settings.JWT_REFRESH_SECRET, algorithm="HS256")
+```
+
+**JWT Rules:**
+- Access tokens: 15 minutes max. Store in memory (not localStorage).
+- Refresh tokens: 7 days max. Store in `httpOnly`, `secure`, `sameSite=strict` cookies.
+- Use separate secrets for access and refresh tokens.
+- Implement token rotation: issue new refresh token on each refresh, invalidate the old one.
+- Maintain a token blacklist/revocation list for logout and security events.
+- Never store sensitive data in JWT payload (passwords, secrets, full PII).
+- Always validate `exp`, `iat`, and token `type` claims.
+
+## Cookie Security
+
+```typescript
+// ✅ Secure cookie settings for auth tokens
+const cookieOptions = {
+  httpOnly: true,       // Prevents XSS access via document.cookie
+  secure: true,         // HTTPS only
+  sameSite: 'strict',   // Prevents CSRF
+  path: '/',
+  maxAge: 7 * 24 * 60 * 60, // 7 days in seconds
+  domain: '.yourapp.com',
+};
+
+// Set refresh token cookie
+res.setHeader('Set-Cookie', serialize('refreshToken', token, cookieOptions));
+```
+
+## Middleware Guards (Next.js)
+
+```typescript
+// middleware.ts — Protect routes at the edge
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { verifyAccessToken } from '@/lib/auth';
+
+const publicPaths = ['/login', '/signup', '/forgot-password', '/api/auth/login'];
+const adminPaths = ['/admin', '/api/admin'];
+
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Allow public paths
+  if (publicPaths.some(p => pathname.startsWith(p))) {
+    return NextResponse.next();
+  }
+
+  // Verify authentication
+  const token = request.headers.get('authorization')?.replace('Bearer ', '');
+  if (!token) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  try {
+    const payload = verifyAccessToken(token);
+
+    // Check admin authorization
+    if (adminPaths.some(p => pathname.startsWith(p)) && payload.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // Attach user info to headers for downstream use
+    const response = NextResponse.next();
+    response.headers.set('x-user-id', payload.userId);
+    response.headers.set('x-user-role', payload.role);
+    return response;
+  } catch {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};
+```
+
+## Middleware Guards (FastAPI)
+
+```python
+# ✅ Dependency injection for auth
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security = HTTPBearer()
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    try:
+        payload = jwt.decode(credentials.credentials, settings.JWT_ACCESS_SECRET, algorithms=["HS256"])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user = await db.get(User, payload["sub"])
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return user
+
+# Role-based guard
+def require_role(*roles: str):
+    async def role_checker(user: User = Depends(get_current_user)) -> User:
+        if user.role not in roles:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return user
+    return role_checker
+
+# Usage
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: int, admin: User = Depends(require_role("admin"))):
+    ...
+```
+
+## Role-Based Access Control (RBAC)
+
+```typescript
+// ✅ Define permissions, not just roles
+const PERMISSIONS = {
+  admin:  ['users:read', 'users:write', 'users:delete', 'posts:read', 'posts:write', 'posts:delete', 'settings:write'],
+  editor: ['posts:read', 'posts:write', 'posts:delete', 'users:read'],
+  viewer: ['posts:read', 'users:read'],
+} as const;
+
+type Role = keyof typeof PERMISSIONS;
+type Permission = typeof PERMISSIONS[Role][number];
+
+function hasPermission(role: Role, permission: Permission): boolean {
+  return (PERMISSIONS[role] as readonly string[]).includes(permission);
+}
+
+// Usage in API route
+if (!hasPermission(user.role, 'users:delete')) {
+  return res.status(403).json({ error: 'Insufficient permissions' });
+}
+```
+
+**RBAC Rules:**
+- Check permissions server-side on every request. Client-side role checks are for UX only.
+- Use principle of least privilege: start with no permissions, add as needed.
+- Log all permission denials for security monitoring.
+- Never use role names in client-facing URLs or local storage.
+
+## OAuth 2.0 / Social Login
+
+- Use established libraries (NextAuth.js / Auth.js, python-social-auth).
+- Always validate the `state` parameter to prevent CSRF.
+- Request minimum scopes needed.
+- Store OAuth tokens encrypted, never in plaintext.
+- Implement proper token refresh flow.
+- Handle account linking carefully: verify email ownership before linking.
+
+## Session Security Checklist
+
+- [ ] Regenerate session ID after login (prevent session fixation).
+- [ ] Set absolute session timeout (e.g., 24 hours).
+- [ ] Set idle session timeout (e.g., 30 minutes).
+- [ ] Invalidate all sessions on password change.
+- [ ] Implement "sign out all devices" functionality.
+- [ ] Store sessions server-side (Redis/DB), not in client-only cookies.
+- [ ] Log session creation and destruction for audit trail.

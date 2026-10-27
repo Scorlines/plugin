@@ -1,0 +1,342 @@
+---
+description: "DevOps, containerization, CI/CD, and deployment best practices. Apply when configuring Docker, CI/CD pipelines, environment management, or production deployments."
+globs: ["Dockerfile*", "docker-compose*", ".github/**", "*.yml", "*.yaml", ".env*"]
+alwaysApply: false
+---
+# DevOps & Deployment Standards
+
+You are a DevOps-aware fullstack engineer. Code that can't be deployed reliably is unfinished code. Every project must be containerized, tested in CI, and deployable with one command.
+
+## Docker — Multi-Stage Builds
+
+```dockerfile
+# ✅ Node.js / Next.js — Multi-stage for minimal production image
+# Stage 1: Install dependencies
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --only=production && npm cache clean --force
+
+# Stage 2: Build
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# Stage 3: Production runner
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs \
+    && adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+EXPOSE 3000
+ENV PORT=3000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+
+CMD ["node", "server.js"]
+```
+
+```dockerfile
+# ✅ Python / FastAPI — Multi-stage
+FROM python:3.12-slim AS builder
+WORKDIR /app
+RUN pip install --no-cache-dir poetry
+COPY pyproject.toml poetry.lock ./
+RUN poetry export -f requirements.txt --output requirements.txt --without-hashes
+COPY . .
+
+FROM python:3.12-slim AS runner
+WORKDIR /app
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+COPY --from=builder /app/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=builder /app/src ./src
+
+USER appuser
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+```
+
+**Docker Rules:**
+- Always use multi-stage builds. Production images must be minimal.
+- Always use a non-root user (`USER appuser`).
+- Always include a `HEALTHCHECK`.
+- Pin base image versions (`node:20-alpine`, not `node:latest`).
+- Use `.dockerignore` to exclude: `node_modules`, `.git`, `.env`, `*.md`, test files.
+- Never copy `.env` files into images. Use runtime environment variables.
+- Order Dockerfile layers from least to most frequently changed for optimal caching.
+
+## Docker Compose — Local Development
+
+```yaml
+# docker-compose.yml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder  # Use builder stage for dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules  # Prevent overwriting container node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://user:password@db:5432/myapp
+      - REDIS_URL=redis://cache:6379
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: myapp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d myapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cache:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+```
+
+## CI/CD — GitHub Actions
+
+```yaml
+# .github/workflows/ci.yml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Job 1: Lint & Type Check
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run type-check
+      - run: npm audit --production --audit-level=high
+
+  # Job 2: Unit & Integration Tests
+  test:
+    runs-on: ubuntu-latest
+    needs: quality
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test -- --coverage
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/testdb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  # Job 3: E2E Tests
+  e2e:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-results
+          path: test-results/
+
+  # Job 4: Build & Push Docker Image
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, e2e]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+## Environment Management
+
+```bash
+# ✅ Required .env files structure
+.env.example      # Template with placeholder values — COMMIT THIS
+.env.local        # Local development overrides — NEVER COMMIT
+.env.development  # Shared dev defaults — COMMIT (no secrets)
+.env.production   # Production config reference — NEVER COMMIT
+.env.test         # Test environment — COMMIT (no secrets)
+```
+
+```bash
+# .gitignore — MANDATORY entries
+.env
+.env.local
+.env.production
+.env*.local
+```
+
+**Environment Rules:**
+- Never use the same secrets across environments.
+- Production secrets must come from a secret manager (Vercel, AWS, GCP, Vault).
+- Validate all required env vars at startup — fail fast, not at the first request.
+
+```typescript
+// ✅ Validate env at startup
+import { z } from 'zod';
+
+const envSchema = z.object({
+  DATABASE_URL: z.string().url(),
+  JWT_ACCESS_SECRET: z.string().min(32),
+  JWT_REFRESH_SECRET: z.string().min(32),
+  REDIS_URL: z.string().url().optional(),
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+});
+
+export const env = envSchema.parse(process.env);
+```
+
+## Health Checks
+
+```typescript
+// ✅ /api/health — Every app needs this
+export async function GET() {
+  const checks = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    version: process.env.APP_VERSION || 'unknown',
+    checks: {} as Record<string, { status: string; latency?: number }>,
+  };
+
+  // Database check
+  try {
+    const start = Date.now();
+    await prisma.$queryRaw`SELECT 1`;
+    checks.checks.database = { status: 'healthy', latency: Date.now() - start };
+  } catch {
+    checks.checks.database = { status: 'unhealthy' };
+    checks.status = 'degraded';
+  }
+
+  // Redis check
+  try {
+    const start = Date.now();
+    await redis.ping();
+    checks.checks.redis = { status: 'healthy', latency: Date.now() - start };
+  } catch {
+    checks.checks.redis = { status: 'unhealthy' };
+    checks.status = 'degraded';
+  }
+
+  const statusCode = checks.status === 'healthy' ? 200 : 503;
+  return Response.json(checks, { status: statusCode });
+}
+```
+
+## Production Readiness Checklist
+
+Before every deployment:
+
+- [ ] All tests pass (unit, integration, E2E)
+- [ ] No critical/high `npm audit` or `pip audit` vulnerabilities
+- [ ] Environment variables validated at startup
+- [ ] Health check endpoint working
+- [ ] Database migrations applied and tested
+- [ ] Error tracking configured (Sentry or equivalent)
+- [ ] Logging structured and centralized
+- [ ] Rate limiting enabled on public endpoints
+- [ ] CORS configured for production domains only
+- [ ] Security headers set (CSP, HSTS, X-Frame-Options)
+- [ ] SSL/TLS certificate valid
+- [ ] Backup strategy in place and tested
+- [ ] Rollback procedure documented and tested
+- [ ] Monitoring and alerting configured

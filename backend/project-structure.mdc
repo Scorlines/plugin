@@ -1,0 +1,288 @@
+---
+description: "Project structure conventions for fullstack applications. Apply when creating new projects, adding features, or reorganizing code."
+globs: ["**/*"]
+alwaysApply: false
+---
+# Project Structure Standards
+
+You are a systematic engineer. A well-organized project is a maintainable project. Every file has a place, and every developer knows where to find things.
+
+## Next.js Fullstack Structure (App Router)
+
+```
+project-root/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml              # CI/CD pipeline
+│       └── deploy.yml          # Deployment workflow
+├── .husky/
+│   ├── pre-commit              # Lint-staged
+│   └── commit-msg              # Commitlint
+├── public/
+│   ├── favicon.ico
+│   ├── robots.txt
+│   └── sitemap.xml
+├── src/
+│   ├── app/                    # Next.js App Router
+│   │   ├── (auth)/             # Route group: auth pages (no layout)
+│   │   │   ├── login/page.tsx
+│   │   │   ├── signup/page.tsx
+│   │   │   └── layout.tsx      # Auth-specific layout
+│   │   ├── (dashboard)/        # Route group: authenticated pages
+│   │   │   ├── dashboard/page.tsx
+│   │   │   ├── settings/page.tsx
+│   │   │   └── layout.tsx      # Dashboard layout with sidebar
+│   │   ├── api/
+│   │   │   └── v1/
+│   │   │       ├── users/route.ts
+│   │   │       ├── posts/route.ts
+│   │   │       └── health/route.ts
+│   │   ├── layout.tsx          # Root layout
+│   │   ├── page.tsx            # Home page
+│   │   ├── loading.tsx         # Global loading skeleton
+│   │   ├── error.tsx           # Global error boundary
+│   │   ├── not-found.tsx       # 404 page
+│   │   └── globals.css
+│   ├── components/
+│   │   ├── ui/                 # Shadcn/Radix primitives (auto-generated)
+│   │   │   ├── button.tsx
+│   │   │   ├── input.tsx
+│   │   │   └── dialog.tsx
+│   │   ├── forms/              # Form-specific components
+│   │   │   ├── login-form.tsx
+│   │   │   └── user-form.tsx
+│   │   ├── layout/             # Layout components
+│   │   │   ├── header.tsx
+│   │   │   ├── sidebar.tsx
+│   │   │   └── footer.tsx
+│   │   └── shared/             # Shared across features
+│   │       ├── data-table.tsx
+│   │       ├── pagination.tsx
+│   │       └── error-display.tsx
+│   ├── hooks/                  # Custom React hooks
+│   │   ├── use-auth.ts
+│   │   ├── use-debounce.ts
+│   │   └── use-pagination.ts
+│   ├── lib/                    # Shared utilities & configs
+│   │   ├── auth.ts             # Auth helpers (JWT, session)
+│   │   ├── db.ts               # Database client (Prisma)
+│   │   ├── redis.ts            # Redis client
+│   │   ├── utils.ts            # General utilities
+│   │   ├── validations.ts      # Shared Zod schemas
+│   │   └── constants.ts        # App-wide constants
+│   ├── services/               # Business logic layer
+│   │   ├── user.service.ts
+│   │   ├── post.service.ts
+│   │   └── email.service.ts
+│   ├── types/                  # TypeScript type definitions
+│   │   ├── api.ts              # API request/response types
+│   │   ├── database.ts         # Database model types
+│   │   └── index.ts            # Shared types
+│   └── middleware.ts           # Next.js edge middleware
+├── prisma/
+│   ├── schema.prisma
+│   ├── migrations/
+│   └── seed.ts
+├── e2e/                        # Playwright E2E tests
+│   ├── auth.spec.ts
+│   └── dashboard.spec.ts
+├── docker-compose.yml
+├── Dockerfile
+├── .env.example                # Template — COMMIT THIS
+├── .env.local                  # Local secrets — NEVER COMMIT
+├── .gitignore
+├── next.config.js
+├── tailwind.config.ts
+├── tsconfig.json
+├── vitest.config.ts
+├── playwright.config.ts
+└── package.json
+```
+
+## FastAPI Backend Structure
+
+```
+project-root/
+├── src/
+│   ├── main.py                 # App entry point, middleware, lifespan
+│   ├── config.py               # Settings (pydantic-settings)
+│   ├── database.py             # DB engine, session factory
+│   ├── dependencies.py         # Shared FastAPI dependencies
+│   ├── routers/                # API route handlers
+│   │   ├── __init__.py
+│   │   ├── auth.py
+│   │   ├── users.py
+│   │   └── posts.py
+│   ├── models/                 # SQLAlchemy models (DB schema)
+│   │   ├── __init__.py
+│   │   ├── user.py
+│   │   └── post.py
+│   ├── schemas/                # Pydantic schemas (request/response)
+│   │   ├── __init__.py
+│   │   ├── user.py
+│   │   └── post.py
+│   ├── services/               # Business logic
+│   │   ├── __init__.py
+│   │   ├── user_service.py
+│   │   └── auth_service.py
+│   ├── middleware/              # Custom middleware
+│   │   ├── __init__.py
+│   │   ├── logging.py
+│   │   └── rate_limit.py
+│   └── utils/                  # Helpers
+│       ├── __init__.py
+│       ├── security.py         # Password hashing, JWT
+│       └── email.py
+├── tests/
+│   ├── conftest.py             # Fixtures
+│   ├── test_auth.py
+│   └── test_users.py
+├── alembic/                    # Database migrations
+│   ├── versions/
+│   └── env.py
+├── alembic.ini
+├── pyproject.toml
+├── Dockerfile
+├── docker-compose.yml
+└── .env.example
+```
+
+## Naming Conventions
+
+| Item | Convention | Example |
+|------|-----------|---------|
+| **Files (TS/React)** | kebab-case | `user-profile.tsx` |
+| **Files (Python)** | snake_case | `user_service.py` |
+| **Components** | PascalCase | `UserProfile` |
+| **Hooks** | camelCase, `use` prefix | `useAuth` |
+| **Utils/Functions** | camelCase (TS), snake_case (Python) | `formatDate`, `format_date` |
+| **Constants** | UPPER_SNAKE_CASE | `MAX_FILE_SIZE` |
+| **Types/Interfaces** | PascalCase | `UserResponse` |
+| **CSS classes** | kebab-case (Tailwind utility) | `text-primary` |
+| **API routes** | kebab-case | `/api/v1/order-items` |
+| **Env variables** | UPPER_SNAKE_CASE | `DATABASE_URL` |
+| **DB tables** | snake_case, plural | `user_profiles` |
+| **DB columns** | snake_case | `created_at` |
+
+## File Organization Rules
+
+1. **Co-location**: Keep related files together. Tests next to source, types next to implementation.
+2. **Feature folders**: For large apps, organize by feature, not by type:
+   ```
+   # ✅ Feature-based (scalable)
+   src/features/
+     users/
+       components/
+       hooks/
+       services/
+       types.ts
+     posts/
+       components/
+       hooks/
+       services/
+       types.ts
+
+   # ❌ Type-based (doesn't scale)
+   src/components/    # 200+ files from all features
+   src/hooks/         # Hard to find what belongs where
+   ```
+3. **Barrel exports**: Use `index.ts` for clean imports, but don't barrel everything (it breaks tree shaking).
+4. **Max file length**: ~300 lines. If longer, split into smaller modules.
+5. **One component per file**: Exception: small helper components used only by the parent.
+
+## README Template
+
+Every project must have a README.md with:
+
+```markdown
+# Project Name
+
+Brief description of what this project does.
+
+## Tech Stack
+- Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, Shadcn UI
+- Backend: FastAPI / Next.js API Routes
+- Database: PostgreSQL + Prisma / SQLAlchemy
+- Cache: Redis
+- Auth: JWT + httpOnly cookies
+
+## Quick Start
+
+### Prerequisites
+- Node.js 20+
+- Docker & Docker Compose
+
+### Setup
+1. Clone the repo
+2. Copy `.env.example` to `.env.local` and fill in values
+3. `docker-compose up -d` (starts DB + Redis)
+4. `npm install`
+5. `npm run db:migrate`
+6. `npm run dev`
+
+### Available Scripts
+- `npm run dev` — Start development server
+- `npm run build` — Production build
+- `npm run test` — Run unit tests
+- `npm run test:e2e` — Run E2E tests
+- `npm run lint` — Lint code
+- `npm run db:migrate` — Run database migrations
+- `npm run db:seed` — Seed database
+
+## API Documentation
+Available at `/api/docs` (Swagger UI)
+
+## Deployment
+See [DevOps documentation](./docs/deployment.md)
+```
+
+## Git Configuration
+
+```gitignore
+# .gitignore — Essential entries
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+test-results/
+.env
+.env.local
+.env.production
+.env*.local
+*.log
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.mypy_cache/
+```
+
+```json
+// .lintstagedrc
+{
+  "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
+  "*.{json,md}": ["prettier --write"],
+  "*.py": ["black", "ruff check --fix"]
+}
+```
+
+## Commit Convention
+
+```
+feat: add user registration endpoint
+fix: resolve race condition in payment processing
+refactor: extract validation logic to shared utility
+test: add E2E tests for checkout flow
+docs: update API documentation for v2
+chore: upgrade dependencies to latest versions
+perf: optimize database queries for user listing
+security: patch XSS vulnerability in comment rendering
+```
+
+Format: `type(optional-scope): short description`
+- Subject line: max 72 characters, imperative mood ("add", not "added").
+- Body: explain WHY, not WHAT (the diff shows WHAT).

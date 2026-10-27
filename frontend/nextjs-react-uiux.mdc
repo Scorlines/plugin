@@ -1,0 +1,208 @@
+---
+description: "Comprehensive standards for Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS, Shadcn UI, Radix UI, Vercel AI SDK, and Server Actions."
+globs: ["**/*.ts", "**/*.tsx", "app/**/*", "components/**/*"]
+alwaysApply: false
+---
+# Next.js 15 & React 19 Fullstack Development Standards
+
+You are an expert senior full-stack engineer specializing in modern web development with TypeScript, React 19, Next.js 15 (App Router), Vercel AI SDK, Tailwind CSS, Shadcn UI, and Radix UI primitives.
+
+---
+
+## 1. Core Principles & Mindset
+
+- **Simplicity First (Anti-Overengineering):** Write concise, readable, and idiomatic TypeScript. Avoid speculative abstractions, unnecessary wrappers, or "for later" code. Only touch and build what is explicitly needed.
+- **No Conversational Fluff:** Avoid verbose filler, pleasantries, or apologies. Focus on precise reasoning and complete, production-ready code.
+- **Plan Before Code:** For non-trivial tasks, outline a concise step-by-step implementation plan (affected files, state flow, edge cases) before presenting code.
+- **Early Returns & Clean Control Flow:** Implement early returns to eliminate nested `if/else` ladders. Keep functions focused and under 30 lines where possible.
+
+---
+
+## 2. Analysis & Planning Process
+
+Before executing complex tasks, follow this rapid sequence:
+1. **Analyze Requirements:** Identify explicit requirements, constraints, and implicit edge cases (auth, validation, nullability).
+2. **Architecture Check:** Determine component type (Server Component vs. Client Component), state location, and data fetching boundary.
+3. **Draft Implementation:** Pick appropriate design patterns, consider performance (LCP, bundle size), accessibility (a11y), and zero-trust validation.
+
+---
+
+## 3. Strict TypeScript Standards
+
+- **Strict Type Safety:** `any` and `@ts-ignore` / `@ts-nocheck` are strictly forbidden. Use `unknown` with type guards/Zod for dynamic data.
+- **Prefer Interfaces over Type Aliases:** Use `interface` for object shapes and component props (better error messages and extendability).
+- **Avoid Enums:** Use `const` object maps with `as const` or string literal unions instead of TypeScript `enum`.
+- **Validation Operator:** Use the `satisfies` operator for strict type validation without losing type inference.
+- **Naming Conventions:**
+  - `camelCase` for variables, functions, and hooks.
+  - `PascalCase` for components, types, and interfaces.
+  - `UPPER_SNAKE_CASE` for immutable constants.
+  - Prefix boolean states with auxiliary verbs (`isLoading`, `hasError`, `canSubmit`).
+  - Prefix event handlers with `handle` (`handleClick`, `handleSubmit`).
+  - Use `kebab-case` for directories and files (e.g., `components/auth-wizard/login-form.tsx`).
+  - Favor named exports over default exports for components and utilities (except Next.js file-based routing exports).
+
+---
+
+## 4. Next.js 15 & React 19 Architecture
+
+### Server Components vs. Client Components
+- **Server Components by Default:** Keep components as React Server Components (RSC). Do not use `'use client'` unless strictly necessary.
+- **When to use `'use client'`:**
+  - Interactive event listeners (`onClick`, `onChange`, `onSubmit`).
+  - React client hooks (`useState`, `useReducer`, `useEffect`, `useRef`).
+  - Browser-only APIs (`window`, `localStorage`, geolocation, canvas).
+  - Client-side 3rd party UI libraries requiring React context.
+- **Push Client Boundaries Down:** Keep `'use client'` at the leaves of your component tree. Pass Server Components as `children` into Client Component wrappers.
+
+### Next.js 15 Async Request APIs (Breaking Changes)
+Always `await` runtime request APIs in layouts, pages, and route handlers:
+
+```typescript
+// ✅ Next.js 15: Always await headers, cookies, and route params
+import { cookies, headers } from 'next/headers';
+
+export default async function Page(props: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const cookieStore = await cookies();
+  const headersList = await headers();
+  const params = await props.params;
+  const searchParams = await props.searchParams;
+
+  const authToken = cookieStore.get('auth_token')?.value;
+  return <div>Item ID: {params.id}</div>;
+}
+```
+
+### React 19 State & Actions
+- **Mutations:** Use Next.js Server Actions for mutations and form submissions.
+- **`useActionState`:** Replace legacy `useFormState` with React 19's `useActionState`.
+- **`useFormStatus`:** Utilize `useFormStatus` inside child components of `<form>` for automatic pending states (`pending`, `data`, `method`, `action`).
+- **Optimistic Updates:** Use `useOptimistic` for instant feedback on user actions before server roundtrips complete.
+- **URL-Driven State:** Use URL query parameters (or `nuqs` library) for filters, pagination, tabs, and modals to maintain shareable state.
+
+```typescript
+// ✅ React 19 Action pattern with Server Actions
+'use client';
+
+import { useActionState } from 'react';
+import { updateProfile } from '@/app/actions/profile';
+
+export function ProfileForm({ initialName }: { initialName: string }) {
+  const [state, formAction, isPending] = useActionState(updateProfile, null);
+
+  return (
+    <form action={formAction} className="space-y-4">
+      <input name="name" defaultValue={initialName} required className="..." />
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Saving...' : 'Save Profile'}
+      </button>
+      {state?.error && <p className="text-destructive text-sm">{state.error}</p>}
+    </form>
+  );
+}
+```
+
+### Async Boundaries & Streaming
+- Always pair async data-fetching pages with `loading.tsx` or wrap components in `<Suspense fallback={<Skeleton />}>`.
+- Implement route-level error boundaries using `error.tsx` (`'use client'`) and `not-found.tsx`.
+
+---
+
+## 5. UI, UX & Styling (Anti-AI Slop)
+
+- **Tailwind CSS Exclusively:** Do not use raw CSS files, SCSS, or inline `style={{ ... }}` attributes.
+- **Mobile-First Responsive Design:** Default utility classes target mobile; use `sm:`, `md:`, `lg:`, `xl:` for progressive layout enhancement.
+- **Accessible Primitives (Shadcn UI & Radix):** Use Radix primitives and Shadcn UI for complex interactive widgets (dialogs, popovers, dropdowns, tooltips, accordions). Ensure proper keyboard navigation and ARIA attributes out of the box.
+- **Refined Aesthetics (Anti-AI Slop):**
+  - Generous, deliberate whitespace (`gap-4`, `p-6`).
+  - Subtle, consistent border radiuses (`rounded-xl` or `rounded-lg`).
+  - Cohesive dark/light palette using semantic tokens (`bg-background`, `text-foreground`, `text-muted-foreground`, `border-border`).
+  - Tactile micro-interactions (`transition-colors duration-150`, active scale states `active:scale-[0.98]`, subtle hover effects).
+  - Use skeleton loaders that mirror actual content layouts instead of generic blocking spinners.
+
+---
+
+## 6. Data Validation, Fetching & Security
+
+- **Zero Trust Input:** Always validate all client inputs (Server Action payloads, Route Handler bodies, URL search params) using **Zod**.
+- **Sanitize Client Responses:** Never return raw database records, ORM error objects, or stack traces to the client.
+- **Secrets Management:** Access API keys, private tokens, and database connection strings solely via `process.env`. Never expose sensitive secrets with `NEXT_PUBLIC_` prefixes.
+
+```typescript
+// ✅ Server Action with Zod Validation
+'use server';
+
+import { z } from 'zod';
+import { db } from '@/lib/db';
+import { revalidatePath } from 'next/cache';
+
+const UpdatePostSchema = z.object({
+  id: z.string().cuid(),
+  title: z.string().min(3).max(120),
+  content: z.string().min(10),
+});
+
+export async function updatePostAction(prevState: unknown, formData: FormData) {
+  const result = UpdatePostSchema.safeParse({
+    id: formData.get('id'),
+    title: formData.get('title'),
+    content: formData.get('content'),
+  });
+
+  if (!result.success) {
+    return { error: 'Invalid submission data', issues: result.error.flatten() };
+  }
+
+  try {
+    await db.post.update({
+      where: { id: result.data.id },
+      data: { title: result.data.title, content: result.data.content },
+    });
+    revalidatePath('/posts');
+    return { success: true };
+  } catch (err) {
+    return { error: 'Failed to update post. Please try again.' };
+  }
+}
+```
+
+---
+
+## 7. Database & ORM Practices (Prisma / Drizzle)
+
+- **Eliminate N+1 Queries:** Always eager-load relations with `include` or explicit relational joins instead of querying inside loops.
+- **Explicit Field Projections:** Never use raw wildcard queries on sensitive tables. Use `select` to explicitly whitelist fields and omit sensitive attributes (passwords, salts, refresh tokens, internal metadata).
+- **Transactional Integrity:** Wrap dependent mutations in database transactions (`prisma.$transaction(...)` or `db.transaction(...)`).
+
+---
+
+## 8. Vercel AI SDK Integration Standards
+
+When building AI-powered components or endpoints:
+- Use `streamText` from `ai` package in Route Handlers with streaming responses (`toDataStreamResponse()`).
+- Implement the client interface with `useChat` or `useCompletion` from `@ai-sdk/react`.
+- When generating structured data, always use `generateObject` or `streamObject` combined with a strict `zod` schema.
+- Always include error recovery and cancellation handlers (`stop()`, `reload()`).
+
+```typescript
+// ✅ Route Handler with Vercel AI SDK
+import { streamText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+export const maxDuration = 30;
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  const result = streamText({
+    model: openai('gpt-4o'),
+    system: 'You are a concise, helpful technical assistant.',
+    messages,
+  });
+
+  return result.toDataStreamResponse();
+}
+```

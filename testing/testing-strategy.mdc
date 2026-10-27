@@ -1,0 +1,340 @@
+---
+description: "Testing strategy and patterns for fullstack applications. Apply when writing tests, setting up test infrastructure, or reviewing test coverage."
+globs: ["**/*.test.*", "**/*.spec.*", "**/tests/**", "**/test/**", "**/__tests__/**", "vitest.config.*", "playwright.config.*", "jest.config.*"]
+alwaysApply: false
+---
+# Testing Strategy Standards
+
+You are a test-driven engineer. Untested code is unfinished code. Every feature ships with tests. Every bug fix starts with a failing test.
+
+## Testing Pyramid
+
+```
+       ╱╲          E2E Tests (Playwright)         — Few, slow, high confidence
+      ╱──╲         Integration Tests               — Medium count, medium speed
+     ╱────╲        Component Tests (Testing Library) — Many for UI
+    ╱──────╲       Unit Tests (Vitest/Jest)          — Many, fast, focused
+   ╱────────╲      Static Analysis (TypeScript/ESLint) — Always on
+```
+
+**Coverage Targets:**
+- Unit tests: 80%+ line coverage on business logic
+- Integration tests: All API endpoints and database operations
+- E2E tests: All critical user flows (signup, login, checkout, etc.)
+- 100% coverage on: authentication, payment, data mutations
+
+## Unit Testing (Vitest — Recommended)
+
+```typescript
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+import path from 'path';
+
+export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html', 'lcov'],
+      thresholds: { lines: 80, branches: 75, functions: 80 },
+      exclude: ['node_modules', 'test', '**/*.d.ts', '**/*.config.*'],
+    },
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+  },
+  resolve: {
+    alias: { '@': path.resolve(__dirname, 'src') },
+  },
+});
+```
+
+```typescript
+// ✅ Good unit test — focused, descriptive, AAA pattern
+import { describe, it, expect } from 'vitest';
+import { calculateDiscount } from '@/lib/pricing';
+
+describe('calculateDiscount', () => {
+  // Group by scenario
+  describe('when user is a premium member', () => {
+    it('applies 20% discount on orders over $100', () => {
+      // Arrange
+      const order = { total: 150, userTier: 'premium' as const };
+
+      // Act
+      const result = calculateDiscount(order);
+
+      // Assert
+      expect(result).toBe(30); // 150 * 0.20
+    });
+
+    it('applies no discount on orders under $100', () => {
+      const order = { total: 50, userTier: 'premium' as const };
+      expect(calculateDiscount(order)).toBe(0);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns 0 for zero total', () => {
+      expect(calculateDiscount({ total: 0, userTier: 'premium' })).toBe(0);
+    });
+
+    it('throws for negative total', () => {
+      expect(() => calculateDiscount({ total: -10, userTier: 'basic' })).toThrow('Invalid total');
+    });
+  });
+});
+```
+
+**Unit Test Rules:**
+- One assertion per test (or closely related assertions).
+- Test behavior, not implementation. Don't test private methods directly.
+- Use AAA pattern: Arrange, Act, Assert.
+- Name tests as sentences: `it('returns 404 when user does not exist')`.
+- Use factory functions for test data, not raw object literals everywhere.
+
+```typescript
+// ✅ Factory functions for test data
+function createUser(overrides: Partial<User> = {}): User {
+  return {
+    id: 'user-1',
+    email: 'test@example.com',
+    name: 'Test User',
+    role: 'viewer',
+    createdAt: new Date('2024-01-01'),
+    ...overrides,
+  };
+}
+
+// Usage
+const admin = createUser({ role: 'admin', email: 'admin@example.com' });
+```
+
+## API / Integration Testing
+
+```typescript
+// ✅ Test API endpoints with supertest or app.request
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { app } from '@/app';
+
+describe('POST /api/users', () => {
+  it('creates a user with valid data', async () => {
+    const response = await app.request('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${testToken}` },
+      body: JSON.stringify({ email: 'new@test.com', name: 'New User' }),
+    });
+
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      id: expect.any(String),
+      email: 'new@test.com',
+      name: 'New User',
+    });
+    // Verify password is NOT in response
+    expect(body).not.toHaveProperty('password');
+  });
+
+  it('returns 400 for invalid email', async () => {
+    const response = await app.request('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${testToken}` },
+      body: JSON.stringify({ email: 'not-an-email', name: 'Test' }),
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it('returns 401 without auth token', async () => {
+    const response = await app.request('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'test@test.com', name: 'Test' }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+});
+```
+
+## API Mocking (MSW — Mock Service Worker)
+
+```typescript
+// ✅ Use MSW for mocking external APIs in tests
+// mocks/handlers.ts
+import { http, HttpResponse } from 'msw';
+
+export const handlers = [
+  http.get('https://api.stripe.com/v1/customers/:id', ({ params }) => {
+    return HttpResponse.json({
+      id: params.id,
+      email: 'customer@test.com',
+      name: 'Test Customer',
+    });
+  }),
+
+  http.post('https://api.sendgrid.com/v3/mail/send', () => {
+    return HttpResponse.json({ statusCode: 202 });
+  }),
+];
+
+// mocks/server.ts
+import { setupServer } from 'msw/node';
+import { handlers } from './handlers';
+
+export const server = setupServer(...handlers);
+
+// vitest.setup.ts
+import { beforeAll, afterEach, afterAll } from 'vitest';
+import { server } from './mocks/server';
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+```
+
+**Mocking Rules:**
+- Mock only external dependencies (APIs, databases, file system).
+- Never mock internal business logic — tests should reflect reality.
+- Use MSW (not manual fetch mocks) for API mocking.
+- Set `onUnhandledRequest: 'error'` to catch unmocked external calls.
+
+## Component Testing (React Testing Library)
+
+```typescript
+// ✅ Test user behavior, not implementation
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { LoginForm } from '@/components/LoginForm';
+
+describe('LoginForm', () => {
+  it('submits email and password', async () => {
+    const handleSubmit = vi.fn();
+    render(<LoginForm onSubmit={handleSubmit} />);
+
+    // Query by accessible roles, not CSS selectors
+    await userEvent.type(screen.getByRole('textbox', { name: /email/i }), 'user@test.com');
+    await userEvent.type(screen.getByLabelText(/password/i), 'SecurePass123!');
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+    expect(handleSubmit).toHaveBeenCalledWith({
+      email: 'user@test.com',
+      password: 'SecurePass123!',
+    });
+  });
+
+  it('shows validation error for invalid email', async () => {
+    render(<LoginForm onSubmit={vi.fn()} />);
+
+    await userEvent.type(screen.getByRole('textbox', { name: /email/i }), 'invalid');
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+    expect(screen.getByText(/valid email/i)).toBeInTheDocument();
+  });
+});
+```
+
+**Component Test Rules:**
+- Query elements by role, label, or text — never by CSS class or test ID (unless no alternative).
+- Test user interactions, not state changes.
+- Use `userEvent` (not `fireEvent`) for realistic user interaction simulation.
+- Test accessibility: verify ARIA labels, keyboard navigation, focus management.
+
+## E2E Testing (Playwright)
+
+```typescript
+// playwright.config.ts
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: [['html'], ['github']],
+  use: {
+    baseURL: 'http://localhost:3000',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'mobile', use: { ...devices['Pixel 5'] } },
+  ],
+  webServer: {
+    command: 'npm run dev',
+    url: 'http://localhost:3000',
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+```typescript
+// e2e/auth.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('Authentication Flow', () => {
+  test('user can sign up, log in, and access dashboard', async ({ page }) => {
+    // Sign up
+    await page.goto('/signup');
+    await page.getByLabel('Email').fill('e2e@test.com');
+    await page.getByLabel('Password').fill('SecurePass123!');
+    await page.getByRole('button', { name: 'Create Account' }).click();
+
+    // Verify redirect to dashboard
+    await expect(page).toHaveURL('/dashboard');
+    await expect(page.getByText('Welcome')).toBeVisible();
+
+    // Log out and log back in
+    await page.getByRole('button', { name: 'Log out' }).click();
+    await expect(page).toHaveURL('/login');
+
+    await page.getByLabel('Email').fill('e2e@test.com');
+    await page.getByLabel('Password').fill('SecurePass123!');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL('/dashboard');
+  });
+});
+```
+
+## Python Testing (pytest)
+
+```python
+# ✅ FastAPI testing with httpx
+import pytest
+from httpx import AsyncClient, ASGITransport
+from src.main import app
+
+@pytest.fixture
+async def client():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+@pytest.mark.asyncio
+async def test_create_user(client: AsyncClient):
+    response = await client.post("/api/users", json={"email": "test@example.com", "name": "Test"})
+    assert response.status_code == 201
+    data = response.json()
+    assert data["email"] == "test@example.com"
+    assert "password" not in data
+
+@pytest.mark.asyncio
+async def test_create_user_invalid_email(client: AsyncClient):
+    response = await client.post("/api/users", json={"email": "invalid", "name": "Test"})
+    assert response.status_code == 422
+```
+
+## Test Naming Convention
+
+```
+describe('[Module/Component]')
+  describe('[method/scenario]')
+    it('[expected behavior] when [condition]')
+```
+
+Examples:
+- `it('returns 404 when user does not exist')`
+- `it('applies discount when order exceeds $100')`
+- `it('shows error message when form submission fails')`

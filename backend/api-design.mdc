@@ -1,0 +1,246 @@
+---
+description: "RESTful API design standards, error handling, pagination, and documentation practices. Apply when creating or modifying API endpoints."
+globs: ["**/api/**", "**/routes/**", "**/routers/**", "**/*.controller.*", "**/*.route.*"]
+alwaysApply: false
+---
+# API Design Standards
+
+You are an API architect. APIs are contracts. Once published, they are hard to change. Design them right the first time.
+
+## RESTful Conventions
+
+| Method | Path | Action | Status Code |
+|--------|------|--------|-------------|
+| `GET` | `/api/v1/users` | List users | `200 OK` |
+| `GET` | `/api/v1/users/:id` | Get single user | `200 OK` / `404 Not Found` |
+| `POST` | `/api/v1/users` | Create user | `201 Created` |
+| `PUT` | `/api/v1/users/:id` | Full update | `200 OK` / `404 Not Found` |
+| `PATCH` | `/api/v1/users/:id` | Partial update | `200 OK` / `404 Not Found` |
+| `DELETE` | `/api/v1/users/:id` | Delete user | `204 No Content` / `404 Not Found` |
+
+**Rules:**
+- Use nouns for resources, not verbs: `/api/users`, not `/api/getUsers`.
+- Use plural nouns: `/api/users`, not `/api/user`.
+- Nest related resources: `/api/users/:id/posts`, not `/api/user-posts`.
+- Max 2 levels of nesting. Beyond that, use query filters.
+- Use kebab-case for multi-word URLs: `/api/order-items`.
+
+## API Versioning
+
+```typescript
+// ✅ URL-based versioning (recommended for simplicity)
+// /api/v1/users
+// /api/v2/users
+
+// Next.js App Router structure:
+// app/api/v1/users/route.ts
+// app/api/v2/users/route.ts
+```
+
+**Rules:**
+- Always version your API from day one.
+- URL prefix versioning (`/api/v1/`) is simplest and most visible.
+- Never break existing versions. Deprecate, then remove after migration period.
+
+## Standard Error Response Format
+
+```typescript
+// ✅ Consistent error format across ALL endpoints
+interface ApiError {
+  error: {
+    code: string;        // Machine-readable: 'VALIDATION_ERROR', 'NOT_FOUND'
+    message: string;     // Human-readable description
+    details?: unknown;   // Optional: field-level errors, debug info
+    requestId?: string;  // For log correlation
+  };
+}
+
+// Error response examples:
+// 400
+{ "error": { "code": "VALIDATION_ERROR", "message": "Invalid input", "details": { "email": "Must be a valid email" } } }
+
+// 401
+{ "error": { "code": "UNAUTHORIZED", "message": "Invalid or expired token" } }
+
+// 403
+{ "error": { "code": "FORBIDDEN", "message": "Insufficient permissions" } }
+
+// 404
+{ "error": { "code": "NOT_FOUND", "message": "User not found" } }
+
+// 409
+{ "error": { "code": "CONFLICT", "message": "Email already registered" } }
+
+// 429
+{ "error": { "code": "RATE_LIMIT_EXCEEDED", "message": "Too many requests", "details": { "retryAfter": 60 } } }
+
+// 500
+{ "error": { "code": "INTERNAL_ERROR", "message": "An unexpected error occurred", "requestId": "req_abc123" } }
+```
+
+**Error Rules:**
+- Never expose stack traces, SQL queries, or internal paths in error responses.
+- Always include a machine-readable `code` for client-side handling.
+- Use standard HTTP status codes correctly. Don't use 200 for errors.
+- Include `requestId` in 500 errors for log correlation.
+- Log the full error server-side; return a sanitized version to the client.
+
+## Success Response Format
+
+```typescript
+// ✅ Single resource
+{
+  "data": {
+    "id": "user_abc123",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "createdAt": "2024-01-15T10:30:00Z"
+  }
+}
+
+// ✅ Collection with pagination
+{
+  "data": [...],
+  "pagination": {
+    "page": 1,
+    "pageSize": 20,
+    "totalItems": 150,
+    "totalPages": 8,
+    "hasNextPage": true,
+    "hasPrevPage": false
+  }
+}
+
+// ✅ Empty collection
+{
+  "data": [],
+  "pagination": { "page": 1, "pageSize": 20, "totalItems": 0, "totalPages": 0, "hasNextPage": false, "hasPrevPage": false }
+}
+```
+
+## Pagination
+
+```typescript
+// ✅ Cursor-based (recommended for large datasets)
+// GET /api/v1/posts?cursor=eyJpZCI6MTAwfQ&limit=20
+
+interface CursorPaginationParams {
+  cursor?: string;   // Opaque cursor from previous response
+  limit?: number;    // Default 20, max 100
+}
+
+// Response:
+{
+  "data": [...],
+  "pagination": {
+    "nextCursor": "eyJpZCI6MTIwfQ",  // null if no more
+    "hasMore": true,
+    "limit": 20
+  }
+}
+
+// ✅ Offset-based (simpler, for small datasets)
+// GET /api/v1/users?page=2&pageSize=20
+
+interface OffsetPaginationParams {
+  page?: number;     // Default 1
+  pageSize?: number; // Default 20, max 100
+}
+```
+
+**Pagination Rules:**
+- Always paginate list endpoints. Never return unbounded results.
+- Default page size: 20. Maximum: 100. Reject larger requests.
+- Use cursor-based pagination for real-time data or large datasets.
+- Use offset-based for admin panels or small, static datasets.
+- Always include total count for offset-based pagination.
+
+## Filtering & Sorting
+
+```typescript
+// GET /api/v1/users?status=active&role=admin&sort=-createdAt&search=john
+
+// ✅ Validate filter params
+const FilterSchema = z.object({
+  status: z.enum(['active', 'inactive', 'suspended']).optional(),
+  role: z.enum(['admin', 'editor', 'viewer']).optional(),
+  search: z.string().max(100).optional(),
+  sort: z.string().regex(/^-?(createdAt|name|email)$/).optional().default('-createdAt'),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+```
+
+## Request / Response Logging
+
+```typescript
+// ✅ Log all API requests (redact sensitive data)
+function logRequest(req: Request, res: Response, duration: number) {
+  const log = {
+    timestamp: new Date().toISOString(),
+    method: req.method,
+    path: req.url,
+    status: res.status,
+    duration: `${duration}ms`,
+    ip: req.headers.get('x-forwarded-for') || 'unknown',
+    userAgent: req.headers.get('user-agent'),
+    userId: req.headers.get('x-user-id') || 'anonymous',
+    // NEVER log: request body, auth tokens, passwords, cookies
+  };
+  console.log(JSON.stringify(log));
+}
+```
+
+## FastAPI API Design
+
+```python
+# ✅ Consistent response models
+from pydantic import BaseModel
+from typing import Generic, TypeVar
+from fastapi import Query
+
+T = TypeVar('T')
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    data: list[T]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+class ErrorResponse(BaseModel):
+    code: str
+    message: str
+    details: dict | None = None
+
+# ✅ Well-structured endpoint
+@router.get("/users", response_model=PaginatedResponse[UserResponse])
+async def list_users(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = Query(default=None, pattern="^(active|inactive|suspended)$"),
+    sort: str = Query(default="-created_at", pattern="^-?(created_at|name|email)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+```
+
+## API Documentation
+
+- Use OpenAPI/Swagger for REST APIs. FastAPI generates this automatically.
+- For Next.js, use libraries like `next-swagger-doc` or maintain a manual OpenAPI spec.
+- Document ALL endpoints with: description, parameters, request body schema, response schemas, error codes.
+- Include authentication requirements in docs.
+- Provide example requests and responses.
+
+## Idempotency
+
+- `GET`, `PUT`, `DELETE` must be idempotent (same request = same result).
+- `POST` is not idempotent by default. For critical operations (payments), use idempotency keys:
+
+```typescript
+// ✅ Idempotency for critical mutations
+// Client sends: POST /api/v1/payments  Header: Idempotency-Key: uuid-v4
+// Server checks if key was already processed, returns cached result if so.
+```

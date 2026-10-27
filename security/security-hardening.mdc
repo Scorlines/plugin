@@ -1,0 +1,237 @@
+---
+description: "Security hardening rules based on OWASP Top 10 and modern best practices. Apply to ALL code touching user input, authentication, API endpoints, or data storage."
+globs: ["**/*.ts", "**/*.tsx", "**/*.py", "**/*.js", "**/*.jsx"]
+alwaysApply: true
+---
+# Security Hardening Standards
+
+You are a security-conscious engineer. Every line of code is a potential attack surface. Apply defense-in-depth: never rely on a single layer of protection.
+
+## OWASP Top 10 — Mandatory Awareness
+
+Before writing any endpoint or data handler, mentally check these:
+1. **Injection** — Parameterized queries only. Never concatenate user input into SQL/NoSQL/OS commands.
+2. **Broken Auth** — See `authentication-authorization.mdc`.
+3. **Sensitive Data Exposure** — Encrypt at rest (AES-256) and in transit (TLS 1.3). Never log PII, passwords, tokens, or credit card numbers.
+4. **XXE** — Disable external entity processing in XML parsers. Prefer JSON.
+5. **Broken Access Control** — Verify permissions server-side on every request. Never trust client-side role checks.
+6. **Security Misconfiguration** — No default credentials. No debug mode in production. No verbose error messages to clients.
+7. **XSS** — Sanitize all output. Use framework auto-escaping (React JSX does this). Never use `dangerouslySetInnerHTML` without DOMPurify.
+8. **Insecure Deserialization** — Validate all deserialized data with Zod/Pydantic before use.
+9. **Known Vulnerabilities** — Run `npm audit` / `pip audit` in CI. Block merges with critical CVEs.
+10. **Insufficient Logging** — Log auth failures, access denials, input validation failures. Never log secrets.
+
+## Input Validation — Zero Trust
+
+```typescript
+// ✅ CORRECT: Validate at API boundary with Zod
+import { z } from 'zod';
+
+const CreateUserSchema = z.object({
+  email: z.string().email().max(255),
+  name: z.string().min(1).max(100).regex(/^[a-zA-Z\s'-]+$/),
+  age: z.number().int().min(13).max(150),
+});
+
+// Use in API route
+const parsed = CreateUserSchema.safeParse(req.body);
+if (!parsed.success) {
+  return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
+}
+```
+
+```python
+# ✅ CORRECT: Validate with Pydantic in FastAPI
+from pydantic import BaseModel, EmailStr, Field, field_validator
+import bleach
+
+class CreateUser(BaseModel):
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=100)
+    age: int = Field(ge=13, le=150)
+
+    @field_validator('name')
+    @classmethod
+    def sanitize_name(cls, v: str) -> str:
+        return bleach.clean(v)
+```
+
+**Rules:**
+- Validate ALL inputs: body, query params, path params, headers, cookies.
+- Whitelist allowed characters, don't blacklist dangerous ones.
+- Set strict max lengths on all string inputs.
+- Validate file uploads: check MIME type (not just extension), enforce size limits, scan for malware.
+- Never pass raw user input to: `eval()`, `exec()`, `child_process`, `subprocess`, `os.system()`, template engines, or SQL queries.
+
+## XSS Prevention
+
+```typescript
+// ❌ NEVER: Raw HTML injection
+<div dangerouslySetInnerHTML={{ __html: userComment }} />
+
+// ✅ CORRECT: Sanitize first
+import DOMPurify from 'isomorphic-dompurify';
+<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(userComment) }} />
+
+// ✅ BEST: Let React auto-escape
+<div>{userComment}</div>
+```
+
+- Never use `dangerouslySetInnerHTML` without DOMPurify.
+- Never inject user data into `<script>` tags, `href="javascript:..."`, or event handlers.
+- Set `httpOnly`, `secure`, `sameSite` on all cookies.
+
+## CSRF Protection
+
+```typescript
+// Next.js Server Actions have built-in CSRF protection.
+// For custom API routes, use csrf tokens:
+import { csrf } from '@edge-csrf/nextjs';
+
+// ✅ Always verify Origin/Referer headers on state-changing requests
+// ✅ Use SameSite=Strict cookies
+// ✅ Implement double-submit cookie pattern for SPAs
+```
+
+## SQL Injection Prevention
+
+```typescript
+// ❌ NEVER: String concatenation
+const user = await db.query(`SELECT * FROM users WHERE id = '${userId}'`);
+
+// ✅ CORRECT: Parameterized queries (Prisma)
+const user = await prisma.user.findUnique({ where: { id: userId } });
+
+// ✅ CORRECT: Parameterized queries (raw SQL)
+const user = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+```
+
+```python
+# ❌ NEVER
+cursor.execute(f"SELECT * FROM users WHERE id = '{user_id}'")
+
+# ✅ CORRECT
+cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+```
+
+## Security Headers
+
+```typescript
+// next.config.js — Set security headers
+const securityHeaders = [
+  { key: 'X-DNS-Prefetch-Control', value: 'on' },
+  { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+  {
+    key: 'Content-Security-Policy',
+    value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://api.yourapp.com;"
+  },
+];
+```
+
+```python
+# FastAPI — Use middleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.cors import CORSMiddleware
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["yourapp.com", "*.yourapp.com"])
+```
+
+## CORS Configuration
+
+```typescript
+// ✅ Explicit allowlisting — never use '*' in production
+const allowedOrigins = ['https://yourapp.com', 'https://admin.yourapp.com'];
+
+// next.config.js
+async headers() {
+  return [{
+    source: '/api/:path*',
+    headers: [
+      { key: 'Access-Control-Allow-Origin', value: allowedOrigins.join(',') },
+      { key: 'Access-Control-Allow-Methods', value: 'GET, POST, PUT, DELETE, OPTIONS' },
+      { key: 'Access-Control-Allow-Headers', value: 'Content-Type, Authorization' },
+      { key: 'Access-Control-Max-Age', value: '86400' },
+    ],
+  }];
+}
+```
+
+```python
+# FastAPI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://yourapp.com"],  # Never ["*"] in production
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+```
+
+## Secret Management
+
+- **NEVER** hardcode secrets, API keys, database URLs, or tokens in source code.
+- Use `.env.local` for development, cloud secret managers for production (Vault, AWS Secrets Manager, Vercel Environment Variables).
+- **NEVER** commit `.env` files. Always have `.env` in `.gitignore`.
+- Rotate secrets on a schedule. Implement immediate rotation procedures for compromised secrets.
+- Use separate secrets per environment (dev/staging/prod).
+
+```bash
+# .env.example — Commit this as documentation, never with real values
+DATABASE_URL=postgresql://user:password@localhost:5432/mydb
+JWT_SECRET=generate-a-strong-random-string-here
+NEXT_PUBLIC_API_URL=http://localhost:3000/api
+```
+
+## Rate Limiting
+
+```typescript
+// ✅ Rate limit all public endpoints
+import rateLimit from 'express-rate-limit';
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
+// Stricter limits for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5, // 5 login attempts per 15 minutes
+});
+```
+
+```python
+# FastAPI with slowapi
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
+
+@app.post("/api/login")
+@limiter.limit("5/15minutes")
+async def login(request: Request, credentials: LoginSchema):
+    ...
+```
+
+## Dependency Security
+
+- Run `npm audit --production` or `pip audit` in every CI pipeline.
+- Block merges with critical/high severity vulnerabilities.
+- Pin dependency versions in production. Use lockfiles (`package-lock.json`, `poetry.lock`).
+- Review new dependencies before adding: check maintenance status, download counts, known issues.
+- Prefer well-maintained packages with active security teams.
+
+## Never Trust, Always Verify
+
+- Never trust client-side validation alone — always re-validate server-side.
+- Never trust JWT payload without signature verification.
+- Never trust file extensions — verify MIME types.
+- Never trust URL parameters for authorization decisions.
+- Never trust `req.headers['x-forwarded-for']` without a trusted proxy configuration.

@@ -1,0 +1,573 @@
+---
+description: "Comprehensive database design, Prisma ORM, Supabase, PostgreSQL, migrations, and data modeling best practices with concrete code examples."
+globs: ["prisma/**/*", "**/*.prisma", "supabase/**/*", "src/db/**/*", "src/models/**/*", "drizzle/**/*", "alembic/**/*"]
+alwaysApply: false
+---
+# Database Design & ORM Standards
+
+You are a database-first engineer. The database is the foundation of every application. A poorly designed schema creates compounding technical debt that is expensive to fix later.
+
+---
+
+## 1. Schema Design Principles
+
+### Naming Conventions
+
+```prisma
+// ✅ Prisma Schema — Correct Naming
+model User {
+  id        String   @id @default(cuid())       // Use cuid() or uuid() — never auto-increment for public IDs
+  email     String   @unique
+  name      String
+  role      Role     @default(VIEWER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())             // Always include timestamps
+  updatedAt DateTime @updatedAt                   // Auto-updated on every change
+
+  posts     Post[]
+  profile   Profile?
+
+  @@map("users")                                  // Map to snake_case table name
+}
+
+model Post {
+  id          String   @id @default(cuid())
+  title       String   @db.VarChar(200)           // Explicit length constraints
+  slug        String   @unique @db.VarChar(250)
+  content     String   @db.Text
+  excerpt     String?  @db.VarChar(500)
+  status      PostStatus @default(DRAFT)
+  publishedAt DateTime?
+  viewCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  authorId    String
+  author      User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  categories  Category[]
+  tags        Tag[]
+
+  @@index([authorId, createdAt(sort: Desc)])      // Composite: "posts by user, newest first"
+  @@index([status, publishedAt(sort: Desc)])      // Composite: "published posts, newest first"
+  @@index([slug])                                  // Unique lookup by slug
+  @@map("posts")
+}
+
+enum Role {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum PostStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+```
+
+**Naming Rules:**
+| Element | Convention | Example |
+|---------|-----------|---------|
+| Models (Prisma) | PascalCase singular | `User`, `Post`, `OrderItem` |
+| Tables (SQL) | snake_case plural | `users`, `posts`, `order_items` |
+| Columns | snake_case | `created_at`, `is_active`, `full_name` |
+| Enums (Prisma) | PascalCase | `Role`, `PostStatus` |
+| Enum values | UPPER_SNAKE_CASE | `ADMIN`, `DRAFT`, `IN_PROGRESS` |
+| Foreign keys | `{relation}Id` | `authorId`, `categoryId` |
+| Indexes | Named by purpose | `@@index([authorId, createdAt])` |
+
+### Data Type Selection
+
+```prisma
+// ✅ Choose correct types
+model Product {
+  id          String   @id @default(cuid())
+  name        String   @db.VarChar(200)         // Bounded strings
+  description String?  @db.Text                 // Unbounded text
+  price       Decimal  @db.Decimal(10, 2)       // NEVER use Float for money
+  quantity    Int      @default(0)
+  weight      Float?                             // Float OK for measurements
+  isActive    Boolean  @default(true)
+  metadata    Json?                              // Flexible key-value data
+  tags        String[]                           // PostgreSQL array type
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+```
+
+**Type Rules:**
+- **Money / Currency:** Always use `Decimal(10,2)` — never `Float` (floating-point precision errors).
+- **IDs:** Use `cuid()` or `uuid()` for public-facing IDs. Auto-increment integers leak information (record count, creation order).
+- **Strings:** Set explicit `@db.VarChar(n)` for bounded fields (names, titles, slugs). Use `@db.Text` for unbounded content (articles, comments).
+- **Timestamps:** Every table must have `createdAt` and `updatedAt`.
+- **Booleans:** Prefix with `is`/`has`/`can` (`isActive`, `hasVerifiedEmail`, `canPublish`).
+- **Nullable:** Default to required (`String`). Only use optional (`String?`) when null genuinely means "no value".
+
+---
+
+## 2. Relationships & Constraints
+
+```prisma
+// ✅ One-to-One
+model User {
+  id      String   @id @default(cuid())
+  profile Profile?
+}
+
+model Profile {
+  id     String @id @default(cuid())
+  bio    String? @db.Text
+  avatar String?
+  userId String @unique                            // @unique makes it 1-to-1
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ✅ One-to-Many
+model User {
+  id    String @id @default(cuid())
+  posts Post[]
+}
+
+model Post {
+  id       String @id @default(cuid())
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([authorId])                              // ALWAYS index foreign keys
+}
+
+// ✅ Many-to-Many (explicit join table for extra fields)
+model Post {
+  id         String         @id @default(cuid())
+  categories PostCategory[]
+}
+
+model Category {
+  id    String         @id @default(cuid())
+  name  String         @unique
+  posts PostCategory[]
+}
+
+model PostCategory {
+  postId     String
+  categoryId String
+  sortOrder  Int      @default(0)                  // Extra field on the relation
+  assignedAt DateTime @default(now())
+
+  post     Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([postId, categoryId])                       // Composite primary key
+  @@index([categoryId])
+}
+```
+
+**Relationship Rules:**
+- Always set explicit `onDelete` behavior: `Cascade`, `SetNull`, or `Restrict`.
+- Always add `@@index` on foreign key columns — PostgreSQL does not auto-index them.
+- For many-to-many: use explicit join tables if you need extra fields (timestamps, sort order, metadata).
+- Use implicit many-to-many (`Category[]` / `Post[]`) only for simple relations with no extra data.
+
+---
+
+## 3. Querying — Avoid N+1 and Over-fetching
+
+```typescript
+// ❌ N+1 Problem: 1 query for users + N queries for their posts
+const users = await prisma.user.findMany();
+for (const user of users) {
+  const posts = await prisma.post.findMany({ where: { authorId: user.id } });
+  user.posts = posts; // N extra queries!
+}
+
+// ✅ Eager loading: Single query with include
+const users = await prisma.user.findMany({
+  include: {
+    posts: {
+      where: { status: 'PUBLISHED' },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    },
+  },
+});
+
+// ✅ Select only needed fields — never leak passwords or tokens
+const users = await prisma.user.findMany({
+  select: {
+    id: true,
+    name: true,
+    email: true,
+    role: true,
+    // password: NEVER included
+    // refreshToken: NEVER included
+    _count: { select: { posts: true } }, // Count without loading all posts
+  },
+});
+```
+
+### Pagination — Cursor-Based (Recommended)
+
+```typescript
+// ✅ Cursor-based pagination — efficient for large datasets
+async function getPaginatedPosts(cursor?: string, limit = 20) {
+  const posts = await prisma.post.findMany({
+    take: limit + 1,                           // Fetch one extra to check if more exist
+    ...(cursor && {
+      cursor: { id: cursor },
+      skip: 1,                                 // Skip the cursor itself
+    }),
+    where: { status: 'PUBLISHED' },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, title: true, slug: true, excerpt: true, createdAt: true },
+  });
+
+  const hasMore = posts.length > limit;
+  const data = hasMore ? posts.slice(0, limit) : posts;
+  const nextCursor = hasMore ? data[data.length - 1]?.id : null;
+
+  return { data, nextCursor, hasMore };
+}
+```
+
+### Pagination — Offset-Based (Simple Use Cases)
+
+```typescript
+// ✅ Offset-based pagination — simpler, for admin panels
+async function getUsersPage(page = 1, pageSize = 20) {
+  const [data, totalItems] = await prisma.$transaction([
+    prisma.user.findMany({
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, name: true, email: true, role: true, createdAt: true },
+    }),
+    prisma.user.count(),
+  ]);
+
+  return {
+    data,
+    pagination: {
+      page,
+      pageSize,
+      totalItems,
+      totalPages: Math.ceil(totalItems / pageSize),
+      hasNextPage: page * pageSize < totalItems,
+      hasPrevPage: page > 1,
+    },
+  };
+}
+```
+
+---
+
+## 4. Transactions
+
+```typescript
+// ✅ Wrap dependent mutations in a transaction
+async function transferFunds(fromId: string, toId: string, amount: number) {
+  return prisma.$transaction(async (tx) => {
+    // 1. Debit sender
+    const sender = await tx.account.update({
+      where: { id: fromId },
+      data: { balance: { decrement: amount } },
+    });
+
+    if (sender.balance < 0) {
+      throw new Error('Insufficient funds'); // Transaction auto-rolls back on throw
+    }
+
+    // 2. Credit receiver
+    await tx.account.update({
+      where: { id: toId },
+      data: { balance: { increment: amount } },
+    });
+
+    // 3. Log the transfer
+    await tx.transaction.create({
+      data: { fromId, toId, amount, type: 'TRANSFER' },
+    });
+
+    return { success: true, newBalance: sender.balance };
+  }, {
+    maxWait: 5000,    // Max time to wait for a transaction slot
+    timeout: 10000,   // Max transaction execution time
+    isolationLevel: 'Serializable', // Strongest isolation for financial data
+  });
+}
+```
+
+**Transaction Rules:**
+- Use transactions for any operation that modifies multiple related records.
+- Always set `timeout` and `maxWait` to prevent long-running transactions.
+- Use `Serializable` isolation for financial or inventory operations.
+- Keep transactions short — don't include external API calls inside transactions.
+
+---
+
+## 5. Migrations
+
+```bash
+# ✅ Prisma migration workflow
+# 1. Modify schema.prisma
+# 2. Create migration
+npx prisma migrate dev --name add_user_profile
+
+# 3. In production
+npx prisma migrate deploy
+
+# 4. Generate client after schema changes
+npx prisma generate
+```
+
+**Migration Rules:**
+- Never edit existing migration files. Create new migrations for changes.
+- Every migration must be reversible (or documented if not).
+- Name migrations descriptively: `add_user_profile`, `add_post_status_index`, `remove_legacy_columns`.
+- Test migrations against a copy of production data before deploying.
+- Run migrations in CI before deployment — fail the pipeline if migrations fail.
+- Never use `prisma db push` in production — always use `prisma migrate deploy`.
+
+### Handling Destructive Changes Safely
+
+```sql
+-- ✅ Safe column rename: add new → copy data → remove old (3 migrations)
+
+-- Migration 1: Add new column
+ALTER TABLE users ADD COLUMN full_name VARCHAR(200);
+
+-- Migration 2: Copy data (deploy, let app write to both)
+UPDATE users SET full_name = name WHERE full_name IS NULL;
+
+-- Migration 3: Remove old column (after app no longer reads from old)
+ALTER TABLE users DROP COLUMN name;
+```
+
+---
+
+## 6. Indexing Strategy
+
+```prisma
+// ✅ Index every column used in WHERE, ORDER BY, or JOIN
+model Post {
+  id          String     @id @default(cuid())
+  title       String
+  slug        String     @unique                  // Unique = auto-indexed
+  status      PostStatus
+  authorId    String
+  publishedAt DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([authorId])                              // FK lookup
+  @@index([status, publishedAt(sort: Desc)])       // "Published posts, newest first"
+  @@index([authorId, status, createdAt(sort: Desc)]) // "User's drafts/published, newest"
+}
+```
+
+**Indexing Rules:**
+- Index ALL foreign key columns. PostgreSQL does not auto-index FKs.
+- Composite indexes: put equality filters first, range/sort columns last.
+  - `@@index([status, createdAt])` → Good for `WHERE status = 'PUBLISHED' ORDER BY createdAt DESC`
+  - `@@index([createdAt, status])` → Less efficient for the same query
+- Don't over-index: every index slows down writes. Only index columns you actually query.
+- Monitor slow queries: `EXPLAIN ANALYZE` on queries taking > 100ms.
+- Unique constraints (`@unique`) automatically create indexes.
+
+---
+
+## 7. Prisma Client Setup (Singleton)
+
+```typescript
+// ✅ lib/db.ts — Prevent multiple Prisma instances in development
+import { PrismaClient } from '@prisma/client';
+
+const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: process.env.NODE_ENV === 'development'
+      ? ['query', 'warn', 'error']
+      : ['error'],
+  });
+
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+
+export default prisma;
+```
+
+---
+
+## 8. Supabase Integration
+
+```typescript
+// ✅ Supabase client setup
+import { createClient } from '@supabase/supabase-js';
+import type { Database } from '@/types/supabase'; // Generated types
+
+// Server-side client (with service role for admin operations)
+export const supabaseAdmin = createClient<Database>(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!, // Never expose to client
+);
+
+// Client-side client (with anon key for user-scoped operations)
+export const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, // Safe for client
+);
+```
+
+### Row Level Security (RLS)
+
+```sql
+-- ✅ RLS policies — users can only access their own data
+ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+
+-- Select: Users see only their own posts
+CREATE POLICY "Users can view own posts"
+  ON posts FOR SELECT
+  USING (auth.uid() = author_id);
+
+-- Insert: Users can create posts as themselves
+CREATE POLICY "Users can create own posts"
+  ON posts FOR INSERT
+  WITH CHECK (auth.uid() = author_id);
+
+-- Update: Users can update only their own posts
+CREATE POLICY "Users can update own posts"
+  ON posts FOR UPDATE
+  USING (auth.uid() = author_id)
+  WITH CHECK (auth.uid() = author_id);
+
+-- Delete: Users can delete only their own posts
+CREATE POLICY "Users can delete own posts"
+  ON posts FOR DELETE
+  USING (auth.uid() = author_id);
+
+-- Admin: Full access
+CREATE POLICY "Admins have full access"
+  ON posts FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM users WHERE users.id = auth.uid() AND users.role = 'ADMIN'
+    )
+  );
+```
+
+---
+
+## 9. Caching Layer (Redis)
+
+```typescript
+// ✅ Redis cache wrapper
+import { Redis } from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL!);
+
+// Generic cache-aside pattern
+async function cached<T>(
+  key: string,
+  ttlSeconds: number,
+  fetcher: () => Promise<T>,
+): Promise<T> {
+  const cached = await redis.get(key);
+  if (cached) return JSON.parse(cached) as T;
+
+  const data = await fetcher();
+  await redis.set(key, JSON.stringify(data), 'EX', ttlSeconds);
+  return data;
+}
+
+// Usage
+const popularPosts = await cached('popular_posts', 300, () =>
+  prisma.post.findMany({
+    where: { status: 'PUBLISHED' },
+    orderBy: { viewCount: 'desc' },
+    take: 10,
+  }),
+);
+
+// Invalidate on mutation
+async function updatePost(id: string, data: UpdatePostInput) {
+  await prisma.post.update({ where: { id }, data });
+  await redis.del('popular_posts');            // Invalidate specific cache
+  await redis.del(`post:${id}`);               // Invalidate entity cache
+}
+```
+
+---
+
+## 10. Connection Pooling
+
+```env
+# ✅ Use connection pooling for production
+# Prisma with PgBouncer
+DATABASE_URL="postgresql://user:pass@pgbouncer-host:6432/mydb?pgbouncer=true"
+
+# Direct connection for migrations only
+DIRECT_URL="postgresql://user:pass@db-host:5432/mydb"
+```
+
+```prisma
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+```
+
+---
+
+## 11. Seeding
+
+```typescript
+// prisma/seed.ts
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
+
+const prisma = new PrismaClient();
+
+async function main() {
+  // Create admin user
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@example.com' },
+    update: {},
+    create: {
+      email: 'admin@example.com',
+      name: 'Admin',
+      role: 'ADMIN',
+      password: await bcrypt.hash('SecureAdminPass123!', 12),
+    },
+  });
+
+  // Create sample posts
+  await prisma.post.createMany({
+    data: [
+      { title: 'First Post', slug: 'first-post', content: 'Hello world', status: 'PUBLISHED', authorId: admin.id },
+      { title: 'Draft Post', slug: 'draft-post', content: 'Work in progress', status: 'DRAFT', authorId: admin.id },
+    ],
+    skipDuplicates: true,
+  });
+
+  console.log('✅ Seed complete');
+}
+
+main()
+  .catch(console.error)
+  .finally(() => prisma.$disconnect());
+```
+
+## Database Checklist
+
+- [ ] Every table has `id`, `createdAt`, `updatedAt`
+- [ ] All foreign keys have indexes
+- [ ] Money/currency uses `Decimal`, never `Float`
+- [ ] Public-facing IDs use `cuid()`/`uuid()`, not auto-increment
+- [ ] Sensitive columns (password, token) never included in default selects
+- [ ] All list queries paginated (never unbounded)
+- [ ] Destructive schema changes use multi-step migrations
+- [ ] Connection pooling configured for production
+- [ ] RLS policies active on all user-data tables (Supabase)
+- [ ] Seed script works from clean database

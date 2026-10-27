@@ -1,0 +1,296 @@
+---
+description: "Performance optimization rules for frontend, backend, and database. Apply when building features that impact page load, rendering, or query performance."
+globs: ["**/*.ts", "**/*.tsx", "**/*.py", "**/*.css"]
+alwaysApply: false
+---
+# Performance Optimization Standards
+
+You are a performance-conscious engineer. Fast apps win users. Slow apps lose them. Every millisecond matters.
+
+## Core Web Vitals — Targets
+
+| Metric | Target | What It Measures |
+|--------|--------|-----------------|
+| **LCP** (Largest Contentful Paint) | < 2.5s | How fast main content loads |
+| **INP** (Interaction to Next Paint) | < 200ms | How fast the page responds to clicks |
+| **CLS** (Cumulative Layout Shift) | < 0.1 | How stable the layout is |
+
+## Frontend — Next.js Performance
+
+### Image Optimization
+
+```tsx
+// ✅ Always use next/image — automatic WebP, lazy loading, responsive
+import Image from 'next/image';
+
+<Image
+  src="/hero.jpg"
+  alt="Hero banner"
+  width={1200}
+  height={600}
+  priority              // Only for above-the-fold images (LCP candidates)
+  placeholder="blur"    // Smooth loading experience
+  blurDataURL={blurUrl} // Base64 blur placeholder
+  sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+/>
+
+// ❌ Never use raw <img> tags
+// ❌ Never load full-size images for thumbnails
+// ❌ Never skip alt attributes
+```
+
+### Code Splitting & Lazy Loading
+
+```tsx
+// ✅ Dynamic imports for heavy components
+import dynamic from 'next/dynamic';
+
+const HeavyChart = dynamic(() => import('@/components/Chart'), {
+  loading: () => <ChartSkeleton />,
+  ssr: false, // Skip SSR for client-only components
+});
+
+const MarkdownEditor = dynamic(() => import('@/components/MarkdownEditor'), {
+  loading: () => <EditorSkeleton />,
+});
+```
+
+### Font Optimization
+
+```tsx
+// ✅ Use next/font — automatic self-hosting, zero layout shift
+import { Inter } from 'next/font/google';
+
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',        // Prevent FOIT (Flash of Invisible Text)
+  variable: '--font-inter',
+});
+
+// In layout.tsx
+<html className={inter.variable}>
+```
+
+### React Performance Patterns
+
+```tsx
+// ✅ Memoize expensive computations
+import { useMemo, useCallback, memo } from 'react';
+
+// Memoize expensive calculations
+const sortedItems = useMemo(() =>
+  items.sort((a, b) => a.name.localeCompare(b.name)),
+  [items]
+);
+
+// Memoize callbacks passed to children
+const handleDelete = useCallback((id: string) => {
+  deleteItem(id);
+}, [deleteItem]);
+
+// Memoize child components that receive object/array props
+const UserCard = memo(function UserCard({ user }: { user: User }) {
+  return <div>{user.name}</div>;
+});
+
+// ✅ Use React.startTransition for non-urgent updates
+import { useTransition } from 'react';
+
+function SearchPage() {
+  const [isPending, startTransition] = useTransition();
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+
+  function handleSearch(value: string) {
+    setQuery(value);                    // Urgent: update input immediately
+    startTransition(() => {
+      setResults(filterItems(value));   // Non-urgent: can wait
+    });
+  }
+}
+```
+
+**When to NOT memoize:**
+- Simple components with primitive props (string, number, boolean).
+- Components that always re-render anyway (parent always re-renders).
+- Don't prematurely optimize — measure first with React DevTools Profiler.
+
+### Skeleton Loading (Not Spinners)
+
+```tsx
+// ✅ Skeletons preserve layout and feel faster than spinners
+function UserCardSkeleton() {
+  return (
+    <div className="animate-pulse">
+      <div className="h-12 w-12 rounded-full bg-gray-200" />
+      <div className="h-4 w-3/4 bg-gray-200 rounded mt-2" />
+      <div className="h-3 w-1/2 bg-gray-200 rounded mt-1" />
+    </div>
+  );
+}
+
+// Use in loading.tsx for route-level loading
+export default function Loading() {
+  return <UserCardSkeleton />;
+}
+```
+
+## Backend — API Performance
+
+### Caching Strategy
+
+```typescript
+// ✅ Cache-Control headers for static/semi-static data
+// Immutable assets (hashed filenames)
+'Cache-Control': 'public, max-age=31536000, immutable'
+
+// API responses (short cache + revalidation)
+'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300'
+
+// User-specific / sensitive data
+'Cache-Control': 'private, no-cache, no-store, must-revalidate'
+```
+
+```typescript
+// ✅ Next.js ISR (Incremental Static Regeneration)
+// For pages that change infrequently
+export const revalidate = 3600; // Revalidate every hour
+
+// ✅ On-demand revalidation for content updates
+import { revalidatePath, revalidateTag } from 'next/cache';
+
+// In a Server Action after content update:
+revalidatePath('/blog');
+revalidateTag('posts');
+```
+
+```typescript
+// ✅ Redis caching for expensive queries
+import { redis } from '@/lib/redis';
+
+async function getPopularPosts(): Promise<Post[]> {
+  const cacheKey = 'popular_posts';
+  const cached = await redis.get(cacheKey);
+
+  if (cached) return JSON.parse(cached);
+
+  const posts = await db.post.findMany({
+    orderBy: { views: 'desc' },
+    take: 10,
+  });
+
+  await redis.set(cacheKey, JSON.stringify(posts), 'EX', 300); // 5 min TTL
+  return posts;
+}
+```
+
+### Response Compression
+
+```typescript
+// next.config.js
+module.exports = {
+  compress: true, // gzip/brotli (enabled by default in Next.js)
+};
+```
+
+```python
+# FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
+```
+
+## Database Performance
+
+### Query Optimization
+
+```typescript
+// ❌ N+1 Problem: One query per user's posts
+const users = await prisma.user.findMany();
+for (const user of users) {
+  user.posts = await prisma.post.findMany({ where: { authorId: user.id } });
+}
+
+// ✅ Eager loading: One query with includes
+const users = await prisma.user.findMany({
+  include: { posts: true },
+});
+
+// ✅ Select only needed fields
+const users = await prisma.user.findMany({
+  select: { id: true, name: true, email: true }, // Never select password
+});
+```
+
+```python
+# ✅ SQLAlchemy eager loading
+from sqlalchemy.orm import joinedload
+
+stmt = select(User).options(joinedload(User.posts)).limit(20)
+result = await db.execute(stmt)
+```
+
+### Indexing Rules
+
+```prisma
+// schema.prisma — Add indexes for frequently queried columns
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  role      String
+  status    String
+  createdAt DateTime @default(now())
+
+  @@index([status, createdAt])  // Composite index for filtered + sorted queries
+  @@index([role])               // Filter by role
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  authorId  String
+  status    String
+  createdAt DateTime @default(now())
+
+  author    User     @relation(fields: [authorId], references: [id])
+
+  @@index([authorId, createdAt]) // "Posts by user, newest first"
+  @@index([status])              // "All published posts"
+}
+```
+
+**Database Rules:**
+- Index every column used in `WHERE`, `ORDER BY`, or `JOIN`.
+- Use composite indexes for multi-column queries (order matters!).
+- Monitor slow queries. Set up query logging for queries > 100ms.
+- Use connection pooling (PgBouncer, Prisma connection pool).
+- Paginate all list queries. Never `SELECT *` without `LIMIT`.
+
+## Bundle Analysis
+
+```bash
+# ✅ Analyze your bundle size regularly
+npx @next/bundle-analyzer
+
+# Set budgets
+# Main bundle: < 200KB gzipped
+# Per-page JS: < 100KB gzipped
+# Third-party: < 150KB gzipped
+```
+
+**Bundle Rules:**
+- Monitor bundle size in CI. Set size budgets and fail on regressions.
+- Use tree-shakeable imports: `import { Button } from '@/components/ui/button'`, not `import * as UI from '@/components/ui'`.
+- Audit node_modules quarterly. Remove unused packages.
+- Use `import()` for large libraries only needed on specific pages.
+
+## Performance Checklist
+
+- [ ] Images optimized (WebP, responsive sizes, lazy loaded)
+- [ ] Fonts self-hosted with `display: swap`
+- [ ] Heavy components dynamically imported
+- [ ] API responses cached appropriately
+- [ ] Database queries indexed and paginated
+- [ ] Bundle size under budget
+- [ ] Core Web Vitals passing (LCP < 2.5s, INP < 200ms, CLS < 0.1)
