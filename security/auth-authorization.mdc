@@ -32,16 +32,24 @@ async function verifyPassword(password: string, hash: string): Promise<boolean> 
 ```
 
 ```python
-# ✅ FastAPI with passlib
-from passlib.context import CryptContext
+# ✅ FastAPI with argon2-cffi (recommended — passlib is unmaintained)
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+ph = PasswordHasher(
+    time_cost=3,       # Number of iterations
+    memory_cost=65536,  # 64 MB memory usage
+    parallelism=4,      # Number of parallel threads
+)
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return ph.hash(password)
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return ph.verify(hashed, plain)
+    except VerifyMismatchError:
+        return False
 ```
 
 **Password Rules:**
@@ -117,6 +125,7 @@ def create_refresh_token(data: dict) -> str:
 - Maintain a token blacklist/revocation list for logout and security events.
 - Never store sensitive data in JWT payload (passwords, secrets, full PII).
 - Always validate `exp`, `iat`, and token `type` claims.
+- **Algorithm choice:** `HS256` is fine for single-service apps. For multi-service / microservice architectures, prefer `RS256` or `EdDSA` (asymmetric) — only the auth service holds the private key, other services verify with the public key.
 
 ## Cookie Security
 

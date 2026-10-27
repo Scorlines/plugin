@@ -1,21 +1,415 @@
 ---
-description: "Cursor rules for Python FastAPI development with best practices."
-globs: **/*
+description: "Python FastAPI backend development standards with async patterns, dependency injection, Pydantic v2, and production best practices."
+globs: ["**/*.py", "**/routers/**", "**/schemas/**", "**/models/**", "**/services/**", "pyproject.toml", "alembic/**"]
 alwaysApply: false
 ---
-You are an expert in Python, FastAPI, and scalable API development.
+# FastAPI Backend Standards
 
-Write concise, technical responses with accurate Python examples. Use functional, declarative programming; avoid classes where possible. Prefer iteration and modularization over code duplication. Use descriptive variable names with auxiliary verbs (e.g., is_active, has_permission). Use lowercase with underscores for directories and files (e.g., routers/user_routes.py). Favor named exports for routes and utility functions. Use the Receive an Object, Return an Object (RORO) pattern. Use def for pure functions and async def for asynchronous operations. Use type hints for all function signatures. Prefer Pydantic models over raw dictionaries for input validation.
+You are an expert in Python, FastAPI, and scalable API development. Build APIs that are async-first, type-safe, and production-hardened.
 
-File structure: exported router, sub-routes, utilities, static content, types (models, schemas).
+---
 
-Avoid unnecessary curly braces in conditional statements. For single-line statements in conditionals, omit curly braces. Use concise, one-line syntax for simple conditional statements (e.g., if condition: do_something()).
+## 1. Core Principles
 
-Prioritize error handling and edge cases:
+- **Async-First:** Use `async def` for all I/O-bound operations (database, HTTP, file). Use `def` only for pure CPU-bound functions.
+- **Type Safety:** Use type hints on ALL function signatures. Use Pydantic v2 models for request/response schemas.
+- **Dependency Injection:** Use FastAPI's `Depends()` for database sessions, auth, and shared services.
+- **RORO Pattern:** Receive an Object (Pydantic model), Return an Object (Pydantic model). Never pass raw dicts.
 
-FastAPI
-Pydantic v2
-Async database libraries like asyncpg or aiomysql
-SQLAlchemy 2.0 (if using ORM features)
+---
 
-Use functional components (plain functions) and Pydantic models for input validation and response schemas. Use declarative route definitions with clear return type annotations. Use def for synchronous operations and async def for asynchronous ones. Minimize @app.on_event("startup") and @app.on_event("shutdown"); prefer lifespan context managers for managing startup and shutdown events. Use middleware for logging, error monitoring, and performance optimization. Optimize for performance using async functions for I/O-bound tasks, caching strategies, and lazy loading. Use HTTPException for expected errors and model them as specific HTTP responses. Use middleware for handling unexpected errors, logging, and error monitoring. Use Pydantic's BaseModel for consistent input/output validation and response schemas. Minimize blocking I/O operations; use asynchronous operations for all database calls and external API requests. Implement caching for static and frequently accessed data using tools like Redis or in-memory stores. Optimize data serialization and deserialization with Pydantic. Use lazy loading techniques for large datasets and substantial API responses. Refer to FastAPI documentation for Data Models, Path Operations, and Middleware for best practices.
+## 2. Application Structure
+
+```python
+# ✅ main.py — App entry point with lifespan
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+
+from src.config import settings
+from src.database import engine
+from src.routers import auth, users, posts
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: initialize connections, run checks
+    await verify_database_connection()
+    yield
+    # Shutdown: close connections, flush buffers
+    await engine.dispose()
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    docs_url="/api/docs" if settings.DEBUG else None,  # Disable Swagger in production
+    redoc_url="/api/redoc" if settings.DEBUG else None,
+    lifespan=lifespan,
+)
+
+# Middleware (order matters — last added = first executed)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,  # Never ["*"] in production
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+# Routers
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(posts.router, prefix="/api/v1/posts", tags=["posts"])
+```
+
+**Rules:**
+- Use `lifespan` context manager — never `@app.on_event("startup")` / `@app.on_event("shutdown")` (deprecated).
+- Disable Swagger/ReDoc in production.
+- Add API prefix versioning (`/api/v1/`) from day one.
+
+---
+
+## 3. Configuration (pydantic-settings)
+
+```python
+# ✅ config.py — Validate env vars at startup
+from pydantic_settings import BaseSettings
+from pydantic import Field
+
+class Settings(BaseSettings):
+    APP_NAME: str = "MyApp"
+    APP_VERSION: str = "1.0.0"
+    DEBUG: bool = False
+    ENVIRONMENT: str = "production"
+
+    # Database
+    DATABASE_URL: str
+    DATABASE_POOL_SIZE: int = Field(default=20, ge=5, le=100)
+
+    # Auth
+    JWT_ACCESS_SECRET: str = Field(min_length=32)
+    JWT_REFRESH_SECRET: str = Field(min_length=32)
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # CORS
+    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
+
+    # Redis (optional)
+    REDIS_URL: str | None = None
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+settings = Settings()  # Fails fast if required vars are missing
+```
+
+---
+
+## 4. Database Session (Async SQLAlchemy 2.0)
+
+```python
+# ✅ database.py — Async engine + session factory
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+from src.config import settings
+
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    pool_size=settings.DATABASE_POOL_SIZE,
+    max_overflow=10,
+    pool_pre_ping=True,     # Validate connections before use
+    pool_recycle=3600,       # Recycle connections every hour
+    echo=settings.DEBUG,     # Log SQL in development only
+)
+
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+# ✅ Dependency — yields a session per request, auto-closes
+async def get_db() -> AsyncSession:
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+```
+
+---
+
+## 5. Pydantic v2 Schemas
+
+```python
+# ✅ schemas/user.py — Request and response models
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from datetime import datetime
+import bleach
+
+class UserCreate(BaseModel):
+    """Schema for user registration."""
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def sanitize_name(cls, v: str) -> str:
+        return bleach.clean(v.strip())
+
+class UserResponse(BaseModel):
+    """Schema for user API response — NEVER include password."""
+    id: str
+    email: str
+    name: str
+    role: str
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}  # Pydantic v2: replaces orm_mode
+
+class UserUpdate(BaseModel):
+    """Schema for partial user update."""
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    email: EmailStr | None = None
+```
+
+**Pydantic Rules:**
+- Always use `model_config = {"from_attributes": True}` instead of `class Config: orm_mode = True` (Pydantic v2).
+- Never include `password`, `hashed_password`, or `refresh_token` in response schemas.
+- Use `Field()` with `min_length`, `max_length`, `ge`, `le` for validation.
+- Sanitize string inputs with `bleach.clean()` or regex validators.
+
+---
+
+## 6. Router Patterns
+
+```python
+# ✅ routers/users.py — Clean, typed endpoints
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.database import get_db
+from src.schemas.user import UserCreate, UserResponse, UserUpdate
+from src.services.user_service import UserService
+from src.dependencies import get_current_user, require_role
+from src.models.user import User
+
+router = APIRouter()
+
+@router.get("/", response_model=list[UserResponse])
+async def list_users(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = Query(default=None, pattern="^(active|inactive|suspended)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """List all users (admin only)."""
+    return await UserService(db).list_users(page=page, page_size=page_size, status=status)
+
+@router.get("/{user_id}", response_model=UserResponse)
+async def get_user(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get user by ID."""
+    user = await UserService(db).get_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    payload: UserCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Register a new user."""
+    return await UserService(db).create(payload)
+
+@router.patch("/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: str,
+    payload: UserUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update user (own profile or admin)."""
+    if current_user.id != user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return await UserService(db).update(user_id, payload)
+```
+
+---
+
+## 7. Service Layer
+
+```python
+# ✅ services/user_service.py — Business logic, separate from routes
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.models.user import User
+from src.schemas.user import UserCreate, UserUpdate
+from src.utils.security import hash_password
+
+class UserService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_by_id(self, user_id: str) -> User | None:
+        return await self.db.get(User, user_id)
+
+    async def get_by_email(self, email: str) -> User | None:
+        stmt = select(User).where(User.email == email)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def create(self, data: UserCreate) -> User:
+        existing = await self.get_by_email(data.email)
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already registered")
+
+        user = User(
+            email=data.email,
+            name=data.name,
+            hashed_password=hash_password(data.password),
+        )
+        self.db.add(user)
+        await self.db.flush()  # Get ID without committing
+        return user
+
+    async def list_users(self, page: int, page_size: int, status: str | None) -> list[User]:
+        stmt = select(User).order_by(User.created_at.desc())
+        if status:
+            stmt = stmt.where(User.status == status)
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+```
+
+---
+
+## 8. Dependency Injection for Auth
+
+```python
+# ✅ dependencies.py
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import jwt, JWTError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.config import settings
+from src.database import get_db
+from src.models.user import User
+
+security = HTTPBearer()
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.JWT_ACCESS_SECRET,
+            algorithms=["HS256"],
+        )
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user = await db.get(User, payload["sub"])
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return user
+
+def require_role(*roles: str):
+    """Factory that returns a dependency checking user role."""
+    async def role_checker(user: User = Depends(get_current_user)) -> User:
+        if user.role not in roles:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return user
+    return role_checker
+```
+
+---
+
+## 9. Error Handling
+
+```python
+# ✅ Centralized exception handlers
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import uuid
+import structlog
+
+logger = structlog.get_logger()
+
+class AppError(Exception):
+    def __init__(self, message: str, code: str, status_code: int, details: dict | None = None):
+        self.message = message
+        self.code = code
+        self.status_code = status_code
+        self.details = details
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    request_id = str(uuid.uuid4())
+    logger.warning("app_error", request_id=request_id, code=exc.code, message=exc.message)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message, "requestId": request_id}},
+    )
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    request_id = str(uuid.uuid4())
+    logger.error("unhandled_error", request_id=request_id, error=str(exc), exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "INTERNAL_ERROR", "message": "An unexpected error occurred", "requestId": request_id}},
+    )
+```
+
+---
+
+## 10. Performance
+
+- **Async everywhere:** Use `asyncpg` (PostgreSQL), `aioredis` (Redis), `httpx` (HTTP client).
+- **Connection pooling:** Configure `pool_size` and `max_overflow` in SQLAlchemy engine.
+- **Caching:** Use Redis for frequently accessed data. Set appropriate TTL.
+- **Compression:** Add `GZipMiddleware` for responses > 1KB.
+- **Background tasks:** Use `BackgroundTasks` for non-blocking side effects (email, analytics).
+
+```python
+# ✅ Background tasks for non-blocking operations
+from fastapi import BackgroundTasks
+
+@router.post("/", response_model=UserResponse, status_code=201)
+async def create_user(
+    payload: UserCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    user = await UserService(db).create(payload)
+    background_tasks.add_task(send_welcome_email, user.email, user.name)
+    background_tasks.add_task(track_signup_event, user.id)
+    return user
+```
+
+## FastAPI Checklist
+
+- [ ] `lifespan` context manager used (not `on_event`)
+- [ ] All env vars validated with `pydantic-settings` at startup
+- [ ] All endpoints use `async def` for I/O operations
+- [ ] Request/response schemas defined with Pydantic v2 (`from_attributes = True`)
+- [ ] Password and tokens never in response schemas
+- [ ] Database session injected via `Depends(get_db)`
+- [ ] Auth injected via `Depends(get_current_user)` or `Depends(require_role(...))`
+- [ ] Service layer separates business logic from routes
+- [ ] Centralized error handling with structured error responses
+- [ ] CORS, GZip, and TrustedHost middleware configured
+- [ ] Swagger/ReDoc disabled in production

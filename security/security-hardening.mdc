@@ -127,9 +127,39 @@ const securityHeaders = [
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
   {
     key: 'Content-Security-Policy',
-    value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://api.yourapp.com;"
+    // ⚠️ NEVER use 'unsafe-inline' or 'unsafe-eval' — they negate XSS protection!
+    // Use nonce-based approach for inline scripts:
+    value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://api.yourapp.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
+    // For Next.js with inline scripts, use next.config.js experimental.sri or
+    // generate nonces per-request in middleware:
+    // script-src 'self' 'nonce-{RANDOM}'
   },
 ];
+
+// ✅ Nonce-based CSP for Next.js (recommended for production)
+// middleware.ts
+import { NextResponse } from 'next/server';
+import crypto from 'crypto';
+
+export function middleware(request) {
+  const nonce = crypto.randomBytes(16).toString('base64');
+  const csp = [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}'`,
+    "style-src 'self' 'unsafe-inline'",  // Tailwind needs this
+    "img-src 'self' data: https:",
+    "font-src 'self'",
+    "connect-src 'self' https://api.yourapp.com",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+
+  const response = NextResponse.next();
+  response.headers.set('Content-Security-Policy', csp);
+  response.headers.set('x-nonce', nonce);
+  return response;
+}
 ```
 
 ```python
@@ -143,20 +173,35 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["yourapp.com", "*.youra
 ## CORS Configuration
 
 ```typescript
-// ✅ Explicit allowlisting — never use '*' in production
-const allowedOrigins = ['https://yourapp.com', 'https://admin.yourapp.com'];
+// ⚠️ Access-Control-Allow-Origin does NOT support multiple comma-separated origins!
+// You MUST validate the request Origin header dynamically per-request.
 
-// next.config.js
-async headers() {
-  return [{
-    source: '/api/:path*',
-    headers: [
-      { key: 'Access-Control-Allow-Origin', value: allowedOrigins.join(',') },
-      { key: 'Access-Control-Allow-Methods', value: 'GET, POST, PUT, DELETE, OPTIONS' },
-      { key: 'Access-Control-Allow-Headers', value: 'Content-Type, Authorization' },
-      { key: 'Access-Control-Max-Age', value: '86400' },
-    ],
-  }];
+// ✅ CORRECT: Dynamic origin validation in middleware
+// middleware.ts
+const ALLOWED_ORIGINS = new Set([
+  'https://yourapp.com',
+  'https://admin.yourapp.com',
+  'https://staging.yourapp.com',
+]);
+
+export function middleware(request: NextRequest) {
+  const origin = request.headers.get('origin');
+  const response = NextResponse.next();
+
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    response.headers.set('Access-Control-Allow-Origin', origin);
+    response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    response.headers.set('Access-Control-Allow-Credentials', 'true');
+    response.headers.set('Access-Control-Max-Age', '86400');
+  }
+
+  // Handle preflight
+  if (request.method === 'OPTIONS') {
+    return new NextResponse(null, { status: 204, headers: response.headers });
+  }
+
+  return response;
 }
 ```
 

@@ -338,3 +338,188 @@ Examples:
 - `it('returns 404 when user does not exist')`
 - `it('applies discount when order exceeds $100')`
 - `it('shows error message when form submission fails')`
+
+---
+
+## Test Database Setup & Teardown
+
+```typescript
+// ✅ Prisma test setup — reset DB before each test suite
+// tests/helpers/setup.ts
+import { PrismaClient } from '@prisma/client';
+import { execSync } from 'child_process';
+
+const prisma = new PrismaClient();
+
+export async function resetDatabase() {
+  // Option 1: Truncate all tables (fast, keeps schema)
+  const tables = await prisma.$queryRaw<{ tablename: string }[]>`
+    SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+  `;
+
+  for (const { tablename } of tables) {
+    if (tablename !== '_prisma_migrations') {
+      await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${tablename}" CASCADE`);
+    }
+  }
+}
+
+// vitest.setup.ts
+import { beforeEach, afterAll } from 'vitest';
+import { resetDatabase } from './helpers/setup';
+import { prisma } from '@/lib/db';
+
+beforeEach(async () => {
+  await resetDatabase();
+});
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
+```
+
+```python
+# ✅ pytest — async DB fixture with transaction rollback
+import pytest
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
+@pytest.fixture
+async def db_session():
+    """Provide a transactional DB session that rolls back after each test."""
+    engine = create_async_engine(TEST_DATABASE_URL)
+    async with engine.begin() as conn:
+        session = AsyncSession(bind=conn)
+        yield session
+        await conn.rollback()  # Undo all changes
+    await engine.dispose()
+```
+
+**Test DB Rules:**
+- NEVER run tests against a production or staging database.
+- Use a separate `DATABASE_URL` for tests (e.g., `myapp_test`).
+- Reset/truncate between test suites, not between individual tests (too slow).
+- Use transaction rollback for per-test isolation when possible (fastest).
+- For CI: use GitHub Actions `services` (Postgres container) — see `devops-deployment.mdc`.
+
+---
+
+## Security Testing
+
+```typescript
+// ✅ Test authentication enforcement
+describe('Authentication', () => {
+  it('returns 401 when no auth token is provided', async () => {
+    const response = await app.request('/api/v1/users', { method: 'GET' });
+    expect(response.status).toBe(401);
+  });
+
+  it('returns 401 when token is expired', async () => {
+    const expiredToken = generateToken({ userId: 'user-1' }, { expiresIn: '-1h' });
+    const response = await app.request('/api/v1/users', {
+      headers: { Authorization: `Bearer ${expiredToken}` },
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('returns 401 when token is malformed', async () => {
+    const response = await app.request('/api/v1/users', {
+      headers: { Authorization: 'Bearer not.a.valid.token' },
+    });
+    expect(response.status).toBe(401);
+  });
+});
+
+// ✅ Test authorization (role-based access)
+describe('Authorization', () => {
+  it('returns 403 when non-admin tries to delete a user', async () => {
+    const viewerToken = generateToken({ userId: 'user-1', role: 'viewer' });
+    const response = await app.request('/api/v1/users/user-2', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${viewerToken}` },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('prevents users from accessing other users\' private data', async () => {
+    const userToken = generateToken({ userId: 'user-1', role: 'viewer' });
+    const response = await app.request('/api/v1/users/user-2/private', {
+      headers: { Authorization: `Bearer ${userToken}` },
+    });
+    expect(response.status).toBe(403);
+  });
+});
+
+// ✅ Test input validation (injection prevention)
+describe('Input Validation', () => {
+  it('rejects SQL injection in query parameters', async () => {
+    const response = await app.request('/api/v1/users?status=active\'; DROP TABLE users;--');
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects XSS payloads in request body', async () => {
+    const response = await app.request('/api/v1/posts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ title: '<script>alert("xss")</script>', content: 'Test' }),
+    });
+    const body = await response.json();
+    // Should either reject or sanitize — never store raw HTML
+    expect(body.data?.title).not.toContain('<script>');
+  });
+
+  it('enforces maximum input lengths', async () => {
+    const response = await app.request('/api/v1/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'a@b.c', name: 'x'.repeat(1000) }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+```
+
+**Security Testing Rules:**
+- Test ALL endpoints without auth tokens → expect `401`.
+- Test ALL admin endpoints with non-admin tokens → expect `403`.
+- Test boundary inputs: empty strings, very long strings, special characters, SQL/XSS payloads.
+- Test that sensitive fields (`password`, `token`) are NEVER present in API responses.
+- Include security tests in CI — they must pass before every deployment.
+
+---
+
+## Snapshot Testing Guidelines
+
+```typescript
+// ✅ Use snapshots ONLY for:
+// 1. Complex rendered output that's hard to assert field-by-field
+// 2. API response structure verification (not values)
+// 3. Generated configuration or serialized data
+
+// ⚠️ Snapshot anti-patterns:
+// - Don't snapshot entire page components (too brittle, breaks on every CSS change)
+// - Don't snapshot dynamic data (timestamps, IDs) without serializers
+// - Review snapshot diffs carefully — don't blindly update
+
+it('renders user card with correct structure', () => {
+  const { container } = render(<UserCard user={createUser()} />);
+  expect(container.firstChild).toMatchSnapshot();
+});
+
+// ✅ Prefer inline snapshots for small, focused assertions
+it('formats API error correctly', () => {
+  const error = new ValidationError('Invalid input', { email: 'Required' });
+  expect(formatApiError(error)).toMatchInlineSnapshot(`
+    {
+      "code": "VALIDATION_ERROR",
+      "details": { "email": "Required" },
+      "message": "Invalid input",
+    }
+  `);
+});
+```
+
+**Snapshot Rules:**
+- Prefer explicit assertions (`expect(x).toBe(y)`) over snapshots when possible.
+- Use `toMatchInlineSnapshot` for small outputs — makes diffs visible in the code.
+- Run `vitest --update` only after reviewing every changed snapshot.
+- Never use snapshots as a substitute for understanding what the code produces.

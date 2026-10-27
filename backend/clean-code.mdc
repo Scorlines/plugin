@@ -1,56 +1,320 @@
 ---
-description: Guidelines for writing clean, maintainable, and human-readable code. Apply these rules when writing or reviewing code to ensure consistency and quality.
-globs: ["**/*"]
+description: "Clean code principles with concrete examples for TypeScript and Python. Apply these rules when writing, reviewing, or refactoring code to ensure maintainability and quality."
+globs: ["**/*.ts", "**/*.tsx", "**/*.py", "**/*.js", "**/*.jsx"]
 alwaysApply: false
 ---
-# Clean Code Guidelines
+# Clean Code Standards
 
-## Constants Over Magic Numbers
-- Replace hard-coded values with named constants
-- Use descriptive constant names that explain the value's purpose
-- Keep constants at the top of the file or in a dedicated constants file
+You are a craftsman engineer. Code is read far more often than it is written. Every function, variable, and module should communicate its purpose clearly to the next developer.
 
-## Meaningful Names
-- Variables, functions, and classes should reveal their purpose
-- Names should explain why something exists and how it's used
-- Avoid abbreviations unless they're universally understood
+---
 
-## Smart Comments
-- Don't comment on what the code does - make the code self-documenting
-- Use comments to explain why something is done a certain way
-- Document APIs, complex algorithms, and non-obvious side effects
+## 1. Constants Over Magic Numbers
 
-## Single Responsibility
-- Each function should do exactly one thing
-- Functions should be small and focused
-- If a function needs a comment to explain what it does, it should be split
+```typescript
+// ❌ Magic numbers — what do these mean?
+if (password.length < 8) { ... }
+if (retries > 3) { ... }
+setTimeout(callback, 86400000);
 
-## DRY (Don't Repeat Yourself)
-- Extract repeated code into reusable functions
-- Share common logic through proper abstraction
-- Maintain single sources of truth
+// ✅ Named constants with clear purpose
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_RETRY_ATTEMPTS = 3;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-## Clean Structure
-- Keep related code together
-- Organize code in a logical hierarchy
-- Use consistent file and folder naming conventions
+if (password.length < MIN_PASSWORD_LENGTH) { ... }
+if (retries > MAX_RETRY_ATTEMPTS) { ... }
+setTimeout(callback, ONE_DAY_MS);
+```
 
-## Encapsulation
-- Hide implementation details
-- Expose clear interfaces
-- Move nested conditionals into well-named functions
+```python
+# ❌ Magic numbers
+if len(password) < 8: ...
+time.sleep(300)
 
-## Code Quality Maintenance
-- Refactor continuously
-- Fix technical debt early
-- Leave code cleaner than you found it
+# ✅ Named constants
+MIN_PASSWORD_LENGTH = 8
+CACHE_TTL_SECONDS = 300
 
-## Testing
-- Write tests before fixing bugs
-- Keep tests readable and maintainable
-- Test edge cases and error conditions
+if len(password) < MIN_PASSWORD_LENGTH: ...
+time.sleep(CACHE_TTL_SECONDS)
+```
 
-## Version Control
-- Write clear commit messages
-- Make small, focused commits
-- Use meaningful branch names
+**Rules:**
+- Replace ALL hard-coded values with named constants.
+- Keep constants in a dedicated file (`constants.ts` / `constants.py`) or at module top.
+- Use `UPPER_SNAKE_CASE` for immutable constants.
+
+---
+
+## 2. Meaningful Names
+
+```typescript
+// ❌ Cryptic, abbreviated, generic
+const d = new Date();
+const usr = getUsr(id);
+const data = await fetch('/api/users');
+function process(x: number): number { ... }
+
+// ✅ Descriptive, intention-revealing
+const registrationDate = new Date();
+const currentUser = getUserById(userId);
+const activeUsers = await fetchActiveUsers();
+function calculateTaxAmount(subtotal: number): number { ... }
+```
+
+```python
+# ❌ Cryptic
+def calc(a, b, t):
+    return a * b * (1 + t)
+
+# ✅ Descriptive
+def calculate_total_with_tax(price: float, quantity: int, tax_rate: float) -> float:
+    return price * quantity * (1 + tax_rate)
+```
+
+**Naming Conventions:**
+| Element | Convention | Example |
+|---------|-----------|---------|
+| Boolean variables | `is`/`has`/`can`/`should` prefix | `isActive`, `hasPermission`, `canEdit` |
+| Event handlers | `handle` prefix | `handleSubmit`, `handleClick` |
+| Async functions | Verb describing the action | `fetchUsers`, `createOrder` |
+| Predicates | `is`/`has`/`check` prefix | `isValidEmail`, `hasExpired` |
+| Transform functions | `to`/`from`/`parse`/`format` | `toJSON`, `formatCurrency`, `parseDate` |
+
+---
+
+## 3. Single Responsibility (SRP)
+
+```typescript
+// ❌ Function doing too many things
+async function handleUserRegistration(data: FormData) {
+  const email = data.get('email') as string;
+  const password = data.get('password') as string;
+
+  // Validation (responsibility 1)
+  if (!email.includes('@')) throw new Error('Invalid email');
+  if (password.length < 8) throw new Error('Password too short');
+
+  // Hashing (responsibility 2)
+  const hashedPassword = await bcrypt.hash(password, 12);
+
+  // Database insert (responsibility 3)
+  const user = await db.user.create({ data: { email, password: hashedPassword } });
+
+  // Email sending (responsibility 4)
+  await sendEmail(email, 'Welcome!', welcomeTemplate(user.name));
+
+  // Analytics (responsibility 5)
+  analytics.track('user_registered', { userId: user.id });
+
+  return user;
+}
+
+// ✅ Each function has ONE responsibility
+async function handleUserRegistration(data: RegistrationInput) {
+  const validated = validateRegistration(data);
+  const user = await createUser(validated);
+  await onUserCreated(user); // Side effects: email, analytics
+  return user;
+}
+
+function validateRegistration(data: RegistrationInput): ValidatedRegistration {
+  return RegistrationSchema.parse(data); // Zod handles validation
+}
+
+async function createUser(data: ValidatedRegistration): Promise<User> {
+  const hashedPassword = await hashPassword(data.password);
+  return db.user.create({ data: { email: data.email, password: hashedPassword } });
+}
+
+async function onUserCreated(user: User): Promise<void> {
+  await Promise.allSettled([
+    emailService.sendWelcome(user.email),
+    analytics.track('user_registered', { userId: user.id }),
+  ]);
+}
+```
+
+**SRP Rules:**
+- Each function does exactly ONE thing. If you need "and" to describe it, split it.
+- Functions should be under 30 lines. Over 50 lines is a code smell.
+- Extract helper functions with clear names instead of writing comments.
+
+---
+
+## 4. DRY (Don't Repeat Yourself)
+
+```typescript
+// ❌ Repeated logic across API handlers
+export async function GET(req: Request) {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const user = verifyToken(token);
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // ... handler logic
+}
+
+// ✅ Extracted into reusable utility
+import { withAuth } from '@/lib/api-middleware';
+
+export const GET = withAuth(async (req, user) => {
+  // user is already verified — focus on business logic only
+  const posts = await getPostsByUser(user.id);
+  return NextResponse.json({ data: posts });
+});
+```
+
+**DRY Rules:**
+- If you copy-paste code 3+ times, extract it.
+- Share logic through composition (higher-order functions, middleware), not inheritance.
+- Keep validation schemas (`Zod`, `Pydantic`) as single source of truth — don't duplicate rules.
+
+---
+
+## 5. Early Returns — Flatten Control Flow
+
+```typescript
+// ❌ Deeply nested conditionals
+function processOrder(order: Order): Result {
+  if (order) {
+    if (order.items.length > 0) {
+      if (order.status === 'pending') {
+        if (order.total > 0) {
+          // Actual logic buried 4 levels deep
+          return { success: true };
+        } else {
+          return { error: 'Invalid total' };
+        }
+      } else {
+        return { error: 'Order not pending' };
+      }
+    } else {
+      return { error: 'No items' };
+    }
+  } else {
+    return { error: 'No order' };
+  }
+}
+
+// ✅ Guard clauses with early returns — flat and readable
+function processOrder(order: Order): Result {
+  if (!order) return { error: 'No order' };
+  if (order.items.length === 0) return { error: 'No items' };
+  if (order.status !== 'pending') return { error: 'Order not pending' };
+  if (order.total <= 0) return { error: 'Invalid total' };
+
+  // Happy path — clearly visible
+  return { success: true };
+}
+```
+
+---
+
+## 6. Encapsulation — Hide Complexity
+
+```typescript
+// ❌ Business rules scattered in component
+function OrderSummary({ order }: { order: Order }) {
+  const subtotal = order.items.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const tax = subtotal * 0.11;
+  const shipping = subtotal > 100 ? 0 : 9.99;
+  const discount = order.coupon ? subtotal * order.coupon.rate : 0;
+  const total = subtotal + tax + shipping - discount;
+
+  return <div>Total: {total}</div>;
+}
+
+// ✅ Business logic encapsulated in a pure utility
+// lib/pricing.ts
+export function calculateOrderTotals(order: Order): OrderTotals {
+  const subtotal = order.items.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const tax = subtotal * TAX_RATE;
+  const shipping = subtotal > FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_COST;
+  const discount = order.coupon ? subtotal * order.coupon.rate : 0;
+  return { subtotal, tax, shipping, discount, total: subtotal + tax + shipping - discount };
+}
+
+// Component is now clean
+function OrderSummary({ order }: { order: Order }) {
+  const totals = calculateOrderTotals(order);
+  return <div>Total: {formatCurrency(totals.total)}</div>;
+}
+```
+
+---
+
+## 7. SOLID Principles (Summary)
+
+| Principle | Rule | Violation Signal |
+|-----------|------|-----------------|
+| **S**ingle Responsibility | One reason to change per module | Function name has "and" |
+| **O**pen-Closed | Extend behavior without modifying existing code | `switch` on type that keeps growing |
+| **L**iskov Substitution | Subtypes must be substitutable for parent types | Overridden method changes behavior |
+| **I**nterface Segregation | Don't force clients to depend on unused methods | Interface with 10+ methods |
+| **D**ependency Inversion | Depend on abstractions, not concretions | Direct `new Database()` in business logic |
+
+---
+
+## 8. Code Quality Maintenance
+
+- **Refactor continuously.** Boy Scout Rule: leave code cleaner than you found it.
+- **Fix technical debt early.** A TODO older than 2 sprints should be addressed or removed.
+- **Max file length: ~300 lines.** If longer, split into smaller modules.
+- **One component per file.** Exception: small helper components used only by the parent.
+- Write tests BEFORE fixing bugs — prove the bug exists, then fix it.
+
+---
+
+## 9. Smart Comments
+
+```typescript
+// ❌ Useless comments — restating the code
+// Increment counter by 1
+counter++;
+
+// Get user from database
+const user = await getUser(id);
+
+// ✅ Useful comments — explaining WHY, not WHAT
+// We use optimistic locking here because concurrent edits
+// caused data loss in production (incident #247)
+const updated = await db.post.update({
+  where: { id, version: currentVersion },
+  data: { ...changes, version: { increment: 1 } },
+});
+
+// Rate limit is set to 5/min because the downstream payment
+// provider enforces a 10/min limit and we need headroom
+const PAYMENT_RATE_LIMIT = 5;
+```
+
+---
+
+## 10. Version Control Hygiene
+
+```bash
+# ✅ Commit convention
+feat(auth): add password reset flow
+fix(api): resolve race condition in payment processing
+refactor(db): extract query builder to shared utility
+test(e2e): add checkout flow coverage
+docs(api): update OpenAPI spec for v2 endpoints
+
+# Rules:
+# - Subject: max 72 chars, imperative mood ("add", not "added")
+# - Body: explain WHY, not WHAT (the diff shows WHAT)
+# - One logical change per commit
+# - Small, focused commits > large, sweeping commits
+```
+
+## Clean Code Checklist
+
+- [ ] No magic numbers — all values are named constants
+- [ ] All names are descriptive and intention-revealing
+- [ ] Functions are under 30 lines with a single responsibility
+- [ ] No deeply nested conditionals — guard clauses and early returns used
+- [ ] No copy-pasted logic — duplicated code extracted to shared utilities
+- [ ] Comments explain WHY, not WHAT
+- [ ] Business logic is encapsulated, not scattered across UI components
+- [ ] Every `catch` block handles or re-throws — no empty catches
